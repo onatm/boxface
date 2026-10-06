@@ -1,6 +1,6 @@
 # Baseline Experiment
 
-**Status:** Planned
+**Status:** In progress — Gate A passed ([results](../research/2026-10-gate-a.md))
 
 **Design:** [Architecture](../ARCHITECTURE.md), [Guest](../designs/guest.md), [Image Builder](../designs/image-builder.md), [Credential Broker](../designs/credential-broker.md)
 
@@ -30,6 +30,25 @@ Each gate records its result in `docs/research/2026-10-<gate>.md`:
 2. Attach a writable data disk.
 3. Run SSH, the guest service, and rootless Docker.
 4. Build and run a small Compose application with a database and inspect storage permissions.
+
+### Detailed Plan
+
+Scripts live in `experiments/gate-a/` as plain shell. Keep VMM-specific launch code in one file so a Cloud Hypervisor fallback reuses the kernel, image, and verification steps.
+
+**Host:** A DigitalOcean Basic 2 vCPU / 4 GB droplet using nested virtualization, for feasibility only. DigitalOcean does not officially support nested KVM. Startup, memory, and compile measurements describe a nested guest and must be repeated on the ThinkCentre before they inform targets. Confirm a Firecracker failure on bare metal before treating it as a reason to switch hypervisor.
+
+| Step | Work | Verify |
+|---|---|---|
+| 0. Host readiness | Provision the droplet; record CPU, RAM, disk, and host distribution; install Firecracker | `grep -cE 'vmx\|svm' /proc/cpuinfo` is non-zero; `/dev/kvm` is usable by the launching user; hardware recorded |
+| 1. Guest kernel | Start from Firecracker's published guest config; build in what rootless Docker needs (user namespaces, cgroup v2 controllers, overlayfs, veth, bridge, nf_tables/iptables, tun, seccomp) rather than loading modules from the read-only root | Docker's `check-config.sh` reports no missing required options; config diff from the Firecracker base recorded |
+| 2. Baseline image | mkosi Debian image with systemd, openssh-server, docker-ce and rootless extras, uidmap, dbus-user-session, and passt or slirp4netns; fixed `dev` user with stable UID/GID and baked `/etc/subuid` and `/etc/subgid`; no sudo; `dev` not in the `docker` group; raw ext4 filesystem mounted read-only | Image boots with `/` mounted `ro`; no secrets, host keys, or machine ID in the image |
+| 3. Writable paths | Declare every writable path the read-only root needs: data disk at `/home/dev` and `/workspace`; tmpfs `/run` and `/tmp`; journald `Storage=volatile`; linger file baked at `/var/lib/systemd/linger/dev`; SSH host keys generated on first boot onto the data disk; transient machine ID | Declared path list recorded; nothing else is writable |
+| 4. Launch | Create a sparse ext4 data disk, a tap device with NAT, and a Firecracker config with the rootfs read-only and the data disk read/write; a stub vsock readiness ping stands in for the guest service | Guest reaches SSH; host receives the readiness ping over vsock |
+| 5. Boundaries | Assertion script run over SSH | Writes to `/` and `/usr` fail with EROFS; `sudo` absent; no rootful Docker socket; nothing from the host shared into the guest; `docker info` shows rootless, cgroup v2, the storage driver, and a data root under `/home/dev` |
+| 6. Workload | Compose application (web service and Postgres) with a named volume and a published port | Application healthy; port reachable from the guest; a written row survives a VM restart; volume ownership on disk matches the subordinate UID mapping |
+| 7. Measurements | Kernel options, `dpkg-query` package versions, image build duration and size, cold boot to SSH-ready time, idle memory inside the guest and Firecracker RSS on the host, first `compose up` time | Recorded in `docs/research/2026-10-gate-a.md` |
+
+Guest network isolation from the host management plane is out of scope for Gate A; NAT is used only so the guest can pull images.
 
 ### Pass
 

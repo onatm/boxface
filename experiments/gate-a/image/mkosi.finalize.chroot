@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+groupadd --gid 1000 dev
+useradd --uid 1000 --gid 1000 --home-dir /home/dev --no-create-home --shell /bin/bash dev
+echo 'dev:100000:65536' > /etc/subuid
+echo 'dev:100000:65536' > /etc/subgid
+mkdir -p /home/dev /workspace /mnt/data /var/lib/boxface
+
+rm -f /etc/resolv.conf
+echo 'nameserver 1.1.1.1' > /etc/resolv.conf
+
+systemctl enable systemd-networkd.service boxface-data.service boxface-ready.service
+systemctl mask docker.service docker.socket containerd.service
+systemctl --global enable docker.service

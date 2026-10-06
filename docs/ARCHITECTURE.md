@@ -48,18 +48,18 @@ Component design docs live in `docs/designs/`. Feature docs live in `docs/featur
 
 ## Decision Status
 
-The principles above are agreed requirements. The following are proposed implementation choices, not validated integrations. The MVP starts with feasibility gates for the guest image, package profile, and container runtime ([Baseline Experiment](./plans/2026-10-baseline-experiment.md)).
+The principles above are agreed requirements. The following implementation choices stay proposed until a feasibility gate validates them; the status column records the outcome. The MVP starts with feasibility gates for the guest image, package profile, and container runtime ([Baseline Experiment](./plans/2026-10-baseline-experiment.md)).
 
-| Decision | Initial proposal | Validation needed |
-| --- | --- | --- |
-| Guest distribution | Minimal Debian | Agent, browser, mise, native dependency compatibility |
-| User package compiler | Nix + Home Manager, used in the builder only | Prebuilt closure and profile activation on a non-NixOS guest |
-| Hypervisor | Firecracker as first candidate; Cloud Hypervisor as fallback | Rootless Docker, kernel, filesystem and boot behaviour |
-| Docker execution | Rootless daemon using system-installed binaries | Representative Compose workloads and filesystem support |
-| Metadata | SQLite on one host | Transactional operations and recovery behaviour |
-| Persistent disk | One ext4 data image per environment initially | Mount layout, backup and crash recovery |
-| Access | SSH through the host on a private network | Tablet connectivity and authentication flow |
-| Implementation language | Not selected | Prefer a small native service/CLI stack; choose during implementation |
+| Decision | Initial proposal | Validation needed | Status |
+| --- | --- | --- | --- |
+| Guest distribution | Minimal Debian | Agent, browser, mise, native dependency compatibility | Proposed |
+| User package compiler | Nix + Home Manager, used in the builder only | Prebuilt closure and profile activation on a non-NixOS guest | Proposed |
+| Hypervisor | Firecracker as first candidate; Cloud Hypervisor as fallback | Rootless Docker, kernel, filesystem and boot behaviour | Firecracker selected provisionally; confirm on the ThinkCentre without nested virtualization ([Gate A](./research/2026-10-gate-a.md)) |
+| Docker execution | Rootless daemon using system-installed binaries | Representative Compose workloads and filesystem support | Validated ([Gate A](./research/2026-10-gate-a.md)) |
+| Metadata | SQLite on one host | Transactional operations and recovery behaviour | Proposed |
+| Persistent disk | One ext4 data image per environment initially | Mount layout, backup and crash recovery | Proposed |
+| Access | SSH through the host on a private network | Tablet connectivity and authentication flow | Proposed |
+| Implementation language | Not selected | Prefer a small native service/CLI stack; choose during implementation | Proposed |
 
 ## System Topology
 
@@ -225,9 +225,9 @@ Local metadata lives in SQLite on the host and is owned by the API. Essential re
 ## Open Questions
 
 - [ ] Confirm ThinkCentre hardware, host distribution, capacity, and private access setup.
-- [ ] Select Firecracker or Cloud Hypervisor after the guest/Docker spike.
+- [x] Select Firecracker or Cloud Hypervisor after the guest/Docker spike. Firecracker, provisional until confirmed on the ThinkCentre ([Gate A](./research/2026-10-gate-a.md)).
 - [ ] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism.
-- [ ] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility.
+- [x] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility. Linux 6.18 LTS from Firecracker's guest config plus a Boxface fragment, read-only ext4 root, containerd overlayfs snapshotter ([Gate A](./research/2026-10-gate-a.md)).
 - [ ] Choose implementation language and HTTP/RPC libraries after component boundaries are accepted.
 - [ ] Confirm agent package availability, licensing constraints, release pinning and authentication flows.
 - [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow.

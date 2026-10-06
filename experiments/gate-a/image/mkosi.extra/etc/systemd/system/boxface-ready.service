@@ -1,0 +1,11 @@
+[Unit]
+Description=Report guest readiness over vsock
+After=ssh.service boxface-data.service
+Requires=ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo ready | socat - VSOCK-CONNECT:2:1024'
+
+[Install]
+WantedBy=multi-user.target

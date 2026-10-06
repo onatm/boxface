@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+d=/mnt/data
+install -d -o 1000 -g 1000 -m 0700 "$d/home"
+install -d -o 1000 -g 1000 -m 0755 "$d/workspace"
+install -d -o root -g root -m 0700 "$d/boxface/ssh"
+[ -f "$d/boxface/ssh/ssh_host_ed25519_key" ] || ssh-keygen -q -t ed25519 -N '' -f "$d/boxface/ssh/ssh_host_ed25519_key"
+
+mount --bind "$d/home" /home/dev
+mount --bind "$d/workspace" /workspace
+mount --bind "$d/boxface" /var/lib/boxface

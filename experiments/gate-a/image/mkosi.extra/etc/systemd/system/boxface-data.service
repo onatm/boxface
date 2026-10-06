@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare Boxface persistent data
+RequiresMountsFor=/mnt/data
+Before=ssh.service systemd-user-sessions.service user@1000.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/boxface-data-init
+
+[Install]
+WantedBy=multi-user.target

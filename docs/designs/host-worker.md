@@ -49,7 +49,7 @@ stateDiagram-v2
     error --> stopped: reconciled
 ```
 
-`running` requires the [guest integration service](./guest.md#guest-integration-service) to report readiness; a running VMM alone is not ready. Stopping preserves disk data but ends running processes. Disconnecting a client preserves processes. Suspend/resume and memory snapshots are outside the initial MVP.
+`running` requires the [guest integration service](./guest.md#guest-integration-service) to report readiness; a running VMM alone is not ready. Stopping preserves disk data but ends running processes. A clean stop asks the guest to shut down; with Firecracker this is `SendCtrlAltDel`, which requires the i8042 keyboard driver in the guest kernel ([Gate A](../research/2026-10-gate-a.md)). Disconnecting a client preserves processes. Suspend/resume and memory snapshots are outside the initial MVP.
 
 ### Networking
 
@@ -81,7 +81,7 @@ Initial engineering targets are warm start within 15 seconds on a healthy local/
 
 ## Open Questions
 
-- [ ] Select Firecracker or Cloud Hypervisor after the guest/Docker spike.
+- [x] Select Firecracker or Cloud Hypervisor after the guest/Docker spike. Firecracker, provisional until confirmed on the ThinkCentre ([Gate A](../research/2026-10-gate-a.md)).
 - [ ] Confirm ThinkCentre hardware, host distribution, and capacity.
 
 ## References

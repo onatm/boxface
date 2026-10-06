@@ -84,7 +84,8 @@ A small Boxface service inside the guest reports readiness, coordinates lifecycl
 
 ## Open Questions
 
-- [ ] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility.
+- [x] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility. Linux 6.18 LTS from Firecracker's guest config plus a Boxface fragment, read-only ext4 root, containerd overlayfs snapshotter ([Gate A](../research/2026-10-gate-a.md)).
+- [ ] Persist the machine ID per environment; Gate A used a transient machine ID per boot.
 
 ## References
 
