@@ -1,0 +1,79 @@
+Boxface provides persistent development environments inside microVMs running on servers the user controls. A lightweight client, including a Linux tablet, creates an environment, connects to it, and uses native coding-agent CLIs; the environment keeps running when the client disconnects.
+
+## Project Status
+
+Boxface is not implemented yet. The docs describe a proposed architecture and design; integrations are unvalidated until the feasibility gates in the [Roadmap](./docs/ROADMAP.md) pass. The implementation language is not chosen yet, and the repository has no build tooling.
+
+## Project Documentation
+
+Consult docs only when relevant to the task:
+
+- [Architecture](./docs/ARCHITECTURE.md) - system design, boundaries, data flow, metadata model
+- [Roadmap](./docs/ROADMAP.md) - outcomes, horizons, and what is deliberately not prioritized
+- [Design Docs](./docs/designs/) - canonical component design docs
+- [Feature Docs](./docs/features/) - feature behavior and product decisions
+- [Plans](./docs/plans/) - plans to implement
+- Research Docs (`docs/research/`) - spike and measurement results, named `YYYY-MM-<topic>.md`; create the directory with the first result
+
+## Operating Principles
+
+### Think Before Coding
+
+- State assumptions explicitly; if uncertain or unclear, ask.
+- If multiple interpretations exist, present options/tradeoffs instead of choosing silently.
+- Prefer the simplest viable approach and push back on unnecessary complexity.
+
+### Simplicity First
+
+- Implement the minimum that solves the request.
+- Do not add unrequested features, abstractions, configurability, or speculative error handling.
+- If a simpler solution exists (e.g., 50 lines instead of 200), choose it.
+
+### Surgical Changes
+
+- Touch only requested scope; do not refactor/reformat adjacent code.
+- Match existing style.
+- If you see unrelated dead code, mention it; do not remove it unless asked.
+- Remove only orphans created by your changes (unused imports/vars/functions).
+- Every changed line should map directly to the request.
+
+### Goal-Driven Execution
+
+- Define explicit success criteria and verify them.
+- Convert requests into testable outcomes:
+  - "Add validation": "Write tests for invalid inputs, then make them pass"
+  - "Fix the bug": "Write a test that reproduces it, then make it pass"
+  - "Refactor X": "Ensure tests pass before and after"
+- For multi-step work, use a short plan: `1) step -> verify`.
+- Weak goals ("make it work") need clarification.
+
+## Planning and Research
+
+- Use Context7 for official documentation and Exa for discovery/recency.
+- `librarian`: external library research; keep guidance tech-agnostic unless the user specifies a stack.
+- `architect`: planning and architecture guidance; may delegate deep external research to `librarian`.
+- `scribbler`: maintain docs (design docs, feature docs, READMEs, and architecture).
+- `ui-ux-reviewer`: review UI/UX for usability, accessibility, and consistency.
+
+## Development Workflow
+
+### Task Commands
+
+No Taskfile exists yet. When the first code lands, add a `Taskfile.yaml` as the source of truth for build, test, and lint commands, and list the verification commands here.
+
+### Post-Implementation Checklist
+
+After implementing any feature or component:
+- [ ] Run relevant tests/lint/build commands
+- [ ] Record feasibility and measurement results in `docs/research/`
+- [ ] Update docs when contracts, state, workflow, or behavior changes
+- [ ] Move a validated proposal in [Architecture](./docs/ARCHITECTURE.md#decision-status) from proposed to decided
+
+### Code Style and Component Boundaries
+
+- Follow existing conventions and libraries; do not add comments unless asked.
+- Prefer editing existing files; create docs only when asked.
+- The API never executes client-supplied privileged commands; only the host worker performs privileged host operations, from validated structured specifications.
+- Guests never reach the management plane, other guests, or the host Docker socket.
+- Never bake credentials, host keys, or machine IDs into images, and never write secret values to logs or metadata.
+- Do not weaken the managed-baseline guarantee to make a workload pass; raise it as an explicit design decision.
