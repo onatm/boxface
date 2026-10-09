@@ -10,9 +10,9 @@
 
 **Planning horizon:** Until the personal daily-use trial validates the MVP; Later items are direction, not commitments.
 
-**Last reviewed:** 2026-10-06
+**Last reviewed:** 2026-10-09
 
-**Next review:** When the baseline experiment's feasibility gates pass or force a design change.
+**Next review:** When durable server lifecycle exits, or when ThinkCentre measurements contradict the nested-droplet results.
 
 ---
 
@@ -51,8 +51,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Outcome / problem | Strategic objective | Success signal | Confidence | Owner |
 |---|---|---|---|---|---|
-| Now | The guest, package profile, and container runtime are unproven together | Keep the baseline fixed | One manually launched guest demonstrates the intended boundaries | Medium: design complete; integrations unvalidated | onatm |
-| Next | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: depends on Now | onatm |
+| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; implementation language and plan not yet chosen | onatm |
 | Next | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: depends on Now | onatm |
 | Next | Routine use still needs host internals | Keep operations low-burden | No manual host edits for configuration, upgrades, backups | Medium | onatm |
 | Next | The MVP is unproven in real work | Replace the laptop | Ten development days without Boxface-caused fallback | Medium | onatm |
@@ -61,33 +60,22 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 ## Now
 
-### Prove the baseline boundaries
-
-- **Target outcome:** One manually launched guest boots a read-only mkosi baseline with a prebuilt user package profile, runs rootless Docker Compose with a database, preserves personal configuration and agent state across restart, and receives a credential that never enters the image.
-- **Problem / opportunity:** Every MVP component depends on the guest, Home Manager profile export on a non-NixOS guest, and rootless Docker under a microVM, none of which are validated.
-- **Why now:** A failed gate changes the guest contract, hypervisor, or privilege model, which would invalidate later work.
-- **Evidence:** [Architecture decision status](./ARCHITECTURE.md#decision-status) lists each proposal and the validation it needs.
-- **Committed initiatives:** Gates A–C in [Baseline Experiment](./plans/2026-10-baseline-experiment.md), using scripts and documented artifacts only.
-- **Success and guardrails:** Normal development works without sudo, rootful Docker, a writable system overlay, or host Docker socket access; cold boot needs no package fetch; no secrets in images or build logs.
-- **Dependencies:** ThinkCentre hardware and host distribution confirmed; KVM available.
-- **Risks / assumptions:** Firecracker may not support required kernel or filesystem behaviour (fallback: Cloud Hypervisor). Home Manager activation may need excessive mutable machinery. Rootless Docker may not support necessary workloads.
-- **Confidence:** Medium.
-- **Owner:** onatm
-- **Advance / completion criteria:** All gates pass, or failures produce recorded design decisions; kernel options, package versions, idle memory, build duration, and compatibility failures are recorded in `docs/research/`.
-
-## Next
-
 ### Durable server lifecycle
 
 - **Target outcome:** Environments can be created, listed, started, stopped, and deleted through the API, and survive management-service restarts with correct ownership and state.
 - **Problem / opportunity:** A manually launched guest has no durable intent, so retries and restarts duplicate disks or orphan processes.
-- **Why prioritized:** Every client feature depends on it.
+- **Why now:** The baseline experiment passed on 2026-10-09, and every client feature depends on a durable lifecycle.
+- **Evidence:** Gates [A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), and [C](./research/2026-10-gate-c.md) validated the guest, profile, container runtime, personalisation, and credential delivery that the lifecycle launches and manages.
+- **Committed initiatives:** Choose the implementation language, then write the lifecycle plan in `docs/plans/`. The stage entered Now before its plan exists; the plan is its first deliverable.
 - **Candidate bets:** API, SQLite metadata, worker, image registry, environment disks, asynchronous operations, recovery, and server diagnostics ([Boxface API](./designs/api.md), [Host Worker](./designs/host-worker.md), [Operations](./designs/operations.md)).
-- **Success signal:** Retried creates return the same operation; API/worker restarts discover existing guests without duplicate launch.
-- **Dependencies:** Baseline boundaries proven; hypervisor and implementation language chosen.
+- **Success and guardrails:** Retried creates return the same operation; API/worker restarts discover existing guests without duplicate launch. The API never runs client-supplied privileged commands; guests never reach the management plane.
+- **Dependencies:** Implementation language chosen; Firecracker confirmed on the ThinkCentre without nested virtualization.
+- **Risks / assumptions:** Gate timings come from a nested-virtualization droplet and may not hold on the ThinkCentre. The broker stub had no real guest authorisation; the worker-to-guest channel must provide it.
 - **Confidence:** Medium.
 - **Owner:** onatm
-- **Move-to-Now criteria:** Baseline experiment exits.
+- **Advance / completion criteria:** The success signal holds under repeated operations and management-service restarts.
+
+## Next
 
 ### Daily terminal workflow
 
@@ -144,6 +132,15 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Confidence:** Low.
 - **Reconsideration trigger:** Productisation evidence shows demand.
 
+## Completed
+
+### Prove the baseline boundaries
+
+- **Completed:** 2026-10-09, in the [Baseline Experiment](./plans/2026-10-baseline-experiment.md).
+- **Outcome:** One manually launched Firecracker guest booted a read-only mkosi baseline with a prebuilt Home Manager profile, ran rootless Docker Compose with a database, preserved personal configuration and agent state across restart, and received credentials from 1Password that never entered the image.
+- **Evidence:** [Gate A](./research/2026-10-gate-a.md) (guest and container runtime), [Gate B](./research/2026-10-gate-b.md) (prebuilt user profile), [Gate C](./research/2026-10-gate-c.md) (personal configuration and credentials).
+- **Carried forward:** Repeat measurements on the ThinkCentre; reduce the 4.7 GiB profile closure; add real guest authorisation to the credential broker; validate Codex, OpenCode, and Pi authentication in the daily terminal workflow.
+
 ## Not Now
 
 | Opportunity or request | Reason not prioritized | Reconsideration trigger |
@@ -162,11 +159,11 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Item | Criticality | Current evidence | Validation / resolution | Owner |
 |---|---|---|---|---|
-| ThinkCentre hardware supports the needed environments | High | Capacity not measured | Measure CPU, memory, and disk in the baseline experiment | onatm |
-| Firecracker supports rootless Docker and the guest kernel | High | None | Gate A; fallback Cloud Hypervisor | onatm |
+| ThinkCentre hardware supports the needed environments | High | Capacity not measured; gates ran on a nested-virtualization droplet | Measure CPU, memory, and disk on the ThinkCentre before setting lifecycle capacity limits | onatm |
+| Firecracker supports rootless Docker and the guest kernel | High | Passed on a nested-virtualization droplet ([Gate A](./research/2026-10-gate-a.md)) | Repeat Gate A on the ThinkCentre; fallback Cloud Hypervisor | onatm |
 | Home Manager profile can be exported and exposed read-only on Debian | High | Validated ([Gate B](./research/2026-10-gate-b.md)) | Gate B | onatm |
 | Each agent has a supported authentication path in the guest | Medium | Claude Code validated with subscription login and setup token ([Gate C](./research/2026-10-gate-c.md)); others untested | Gate C and the daily terminal workflow | onatm |
-| Implementation language | Medium | Not selected | Choose after component boundaries are accepted | onatm |
+| Implementation language | High | Not selected | First initiative of durable server lifecycle, before its plan | onatm |
 
 ## Review and Change Policy
 
@@ -179,6 +176,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | Date | Change | Reason / new evidence | Decision maker |
 |---|---|---|---|
 | 2026-10-06 | Created the roadmap from the MVP delivery stages and productisation plan | Docs restructured into architecture, design, feature, and plan docs | onatm |
+| 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now before its plan exists, with the language choice and plan as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
 
 ## Linked Documents
 
