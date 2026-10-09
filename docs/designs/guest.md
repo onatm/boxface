@@ -50,7 +50,13 @@ Enforcement includes a read-only root device, a read-only package store/profile,
 
 ### PATH and Agent Runtimes
 
-The user shell exposes the managed profile as a baseline PATH. mise activation can add project-specific paths above it. Managed agent launchers reference their packaged runtime explicitly, so a project's mise-selected Node version cannot break the managed agent launcher.
+The user shell exposes the managed profile as a baseline PATH, set in `/etc/environment` for non-interactive SSH commands and in `/etc/profile.d` for login shells, whose `/etc/profile` resets PATH. mise activation can add project-specific paths above it. Managed agent launchers reference their packaged runtime explicitly, so a project's mise-selected Node version cannot break the managed agent launcher.
+
+Prebuilt runtimes that mise downloads link against system libraries, so the baseline carries the libraries they need (`libstdc++6` for Node).
+
+### Locale
+
+The guest uses `LANG=C.UTF-8` and the SSH server does not accept client `LANG` or `LC_*`. C.UTF-8 is built into both Debian's and Nix's glibc, so no locale data is required ([Gate B](../research/2026-10-gate-b.md)).
 
 ### Rootless Docker
 

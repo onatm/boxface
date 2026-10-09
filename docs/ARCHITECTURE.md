@@ -52,8 +52,8 @@ The principles above are agreed requirements. The following implementation choic
 
 | Decision | Initial proposal | Validation needed | Status |
 | --- | --- | --- | --- |
-| Guest distribution | Minimal Debian | Agent, browser, mise, native dependency compatibility | Proposed |
-| User package compiler | Nix + Home Manager, used in the builder only | Prebuilt closure and profile activation on a non-NixOS guest | Proposed |
+| Guest distribution | Minimal Debian | Agent, browser, mise, native dependency compatibility | Proposed; agents, mise, Node, and Rust validated with `libstdc++6` added for mise runtimes; browsers untested ([Gate B](./research/2026-10-gate-b.md)) |
+| User package compiler | Nix + Home Manager, used in the builder only | Prebuilt closure and profile activation on a non-NixOS guest | Validated: only `home-path` is exported, embedded read-only in the root image; activation never runs ([Gate B](./research/2026-10-gate-b.md)) |
 | Hypervisor | Firecracker as first candidate; Cloud Hypervisor as fallback | Rootless Docker, kernel, filesystem and boot behaviour | Firecracker selected provisionally; confirm on the ThinkCentre without nested virtualization ([Gate A](./research/2026-10-gate-a.md)) |
 | Docker execution | Rootless daemon using system-installed binaries | Representative Compose workloads and filesystem support | Validated ([Gate A](./research/2026-10-gate-a.md)) |
 | Metadata | SQLite on one host | Transactional operations and recovery behaviour | Proposed |
@@ -226,10 +226,10 @@ Local metadata lives in SQLite on the host and is owned by the API. Essential re
 
 - [ ] Confirm ThinkCentre hardware, host distribution, capacity, and private access setup.
 - [x] Select Firecracker or Cloud Hypervisor after the guest/Docker spike. Firecracker, provisional until confirmed on the ThinkCentre ([Gate A](./research/2026-10-gate-a.md)).
-- [ ] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism.
+- [x] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism. Export `home-path` and its closure into the read-only root image, linked at `/opt/boxface/profile`; Home Manager activation is not run ([Gate B](./research/2026-10-gate-b.md)).
 - [x] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility. Linux 6.18 LTS from Firecracker's guest config plus a Boxface fragment, read-only ext4 root, containerd overlayfs snapshotter ([Gate A](./research/2026-10-gate-a.md)).
 - [ ] Choose implementation language and HTTP/RPC libraries after component boundaries are accepted.
-- [ ] Confirm agent package availability, licensing constraints, release pinning and authentication flows.
+- [ ] Confirm agent package availability, licensing constraints, release pinning and authentication flows. All four agents are packaged in nixpkgs 26.05 and pinned by nixpkgs revision; Claude Code is unfree ([Gate B](./research/2026-10-gate-b.md)). Authentication remains for Gate C.
 - [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow.
 
 ## References

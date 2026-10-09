@@ -40,7 +40,7 @@ Package installation must be complete before developer access is enabled.
 
 The package-profile builder must separate Home Manager's useful package construction from its normal interactive activation workflow. Export the required Nix closure and provide a root-owned profile entry point. Do not expose a writable profile, privileged Nix daemon, or normal `home-manager switch` workflow in the guest.
 
-The feasibility spike must identify the minimal generated artifacts and activation steps required. Do not blindly run an arbitrary activation script as root against a persistent user home. If Home Manager activation requires excessive mutable machinery, retain its package-generation approach or evaluate a smaller build-time Nix profile compiler. This is an explicit design decision, not permission to move user tools into system packages.
+Gate B validated exporting only Home Manager's `home-path`, the package environment, with its closure; no activation step is required for `home.packages` ([Gate B](../research/2026-10-gate-b.md)). Home Manager's generated home files and session variables are not applied. Do not blindly run an arbitrary activation script as root against a persistent user home. If Home Manager activation requires excessive mutable machinery, retain its package-generation approach or evaluate a smaller build-time Nix profile compiler. This is an explicit design decision, not permission to move user tools into system packages.
 
 ### Artifacts and Manifest
 
@@ -93,7 +93,9 @@ Hash resolved build inputs for cache lookup; hash final bytes for artifact ident
 
 ## Open Questions
 
-- [ ] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism.
+- [x] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism. Export only `home-path` and its closure; activation is not run ([Gate B](../research/2026-10-gate-b.md)).
+- [ ] Reduce the profile closure (4.7 GiB in Gate B), starting with the Rust toolchain's `rustc-bootstrap` reference and unused `glibc-locales`.
+- [ ] Export Home Manager session variables into the baseline environment when profile modules set them.
 - [ ] Select guest kernel and root filesystem format from measured compatibility.
 
 ## References
