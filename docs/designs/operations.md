@@ -25,6 +25,10 @@ Every long-running mutation in Boxface (build, create, start, stop, delete, back
 
 An operation has its own `queued`, `running`, `succeeded`, `failed`, or `cancelled` state, independent of the target environment's state. Operation failure must not erase the environment's actual resources. Return structured error codes, retryability, and remediation hints.
 
+- `step_failed`: a worker step returned an error; the message names the step.
+- `internal_error`: the operation could not run, for example a database error; it is failed rather than retried in a loop. If even the failure cannot be recorded, the environment stays held until the API restarts.
+- A shutdown interrupts an operation without failing it; on restart it resumes from its last completed step.
+
 ### Interfaces & Contracts
 
 - Long-running mutations return `202 Accepted`, operation ID, and target ID.
