@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 type job struct {
@@ -49,10 +51,15 @@ var kinds = map[string]kind{
 	TypeDelete: {"deleting", "deleted", []step{stopVM, removeNetwork, purgeDisk}},
 }
 
+type Inventory interface {
+	ActiveVMs(ctx context.Context) (map[string]bool, error)
+}
+
 type Runner struct {
-	ctx    context.Context
-	db     *sql.DB
-	worker Worker
+	ctx        context.Context
+	db         *sql.DB
+	worker     Worker
+	RetryDelay time.Duration
 
 	mu     sync.Mutex
 	active map[string]bool
@@ -60,7 +67,7 @@ type Runner struct {
 }
 
 func NewRunner(ctx context.Context, db *sql.DB, worker Worker) *Runner {
-	return &Runner{ctx: ctx, db: db, worker: worker, active: map[string]bool{}}
+	return &Runner{ctx: ctx, db: db, worker: worker, RetryDelay: 2 * time.Second, active: map[string]bool{}}
 }
 
 func (r *Runner) Kick() {
@@ -110,7 +117,7 @@ func (r *Runner) run(id, target string) {
 			return
 		}
 		slog.Error("operation failed internally", "operation", id, "error", err)
-		if err := r.fail(id, target, "internal_error", err.Error()); err != nil {
+		if err := r.fail(id, target, "internal_error", err.Error(), "error"); err != nil {
 			slog.Error("could not record operation failure; holding environment until restart", "operation", id, "environment", target, "error", err)
 			return
 		}
@@ -155,17 +162,44 @@ func (r *Runner) execute(id string) error {
 		if done[s.name] {
 			continue
 		}
-		if err := s.run(ctx, r.worker, j); err != nil {
+		if err := r.runStep(ctx, s, j); err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("step %s: %w", s.name, ctx.Err())
 			}
-			return r.fail(id, j.env.EnvironmentID, "step_failed", fmt.Sprintf("%s: %v", s.name, err))
+			message := fmt.Sprintf("%s: %v", s.name, err)
+			if j.opType != TypeCreate && j.opType != TypeStart {
+				return r.fail(id, j.env.EnvironmentID, "step_failed", message, "error")
+			}
+			for _, cleanup := range []step{stopVM, removeNetwork} {
+				if err := r.runStep(ctx, cleanup, j); err != nil {
+					if ctx.Err() != nil {
+						return fmt.Errorf("cleanup after %s: %w", s.name, ctx.Err())
+					}
+					return r.fail(id, j.env.EnvironmentID, "step_failed", fmt.Sprintf("%s; cleanup %s failed: %v", message, cleanup.name, err), "error")
+				}
+			}
+			return r.fail(id, j.env.EnvironmentID, "step_failed", message, "stopped")
 		}
 		if _, err := r.db.ExecContext(ctx, `INSERT INTO operation_steps (operation_id, step, completed_at) VALUES (?, ?, ?)`, id, s.name, timestamp()); err != nil {
 			return err
 		}
 	}
 	return r.succeed(ctx, j, k)
+}
+
+func (r *Runner) runStep(ctx context.Context, s step, j job) error {
+	for {
+		err := s.run(ctx, r.worker, j)
+		if !errors.Is(err, ErrWorkerUnavailable) {
+			return err
+		}
+		slog.Warn("worker unavailable; retrying step", "operation", j.id, "step", s.name, "error", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(r.RetryDelay):
+		}
+	}
 }
 
 func (r *Runner) load(ctx context.Context, id string) (job, error) {
@@ -221,18 +255,89 @@ func (r *Runner) succeed(ctx context.Context, j job, k kind) error {
 	return tx.Commit()
 }
 
-func (r *Runner) fail(id, environmentID, code, message string) error {
+func (r *Runner) fail(id, environmentID, code, message, observed string) error {
 	tx, err := r.db.BeginTx(r.ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := timestamp()
-	if _, err := tx.ExecContext(r.ctx, `UPDATE environments SET observed_state = 'error', error = ?, updated_at = ? WHERE id = ?`, message, now, environmentID); err != nil {
+	if _, err := tx.ExecContext(r.ctx, `UPDATE environments SET observed_state = ?, error = ?, updated_at = ? WHERE id = ?`, observed, message, now, environmentID); err != nil {
 		return err
+	}
+	if observed == "stopped" {
+		if _, err := tx.ExecContext(r.ctx, `UPDATE environments SET desired_state = 'stopped' WHERE id = ? AND desired_state = 'running'`, environmentID); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(r.ctx, `UPDATE operations SET state = 'failed', error_code = ?, error_message = ?, updated_at = ? WHERE id = ?`, code, message, now, id); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+const reconciledMessage = "VM was not running when reconciled; the host may have restarted or the VM exited. Start the environment to run it again."
+
+func (r *Runner) Reconcile(ctx context.Context, inv Inventory) ([]string, error) {
+	active, err := inv.ActiveVMs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	const idle = `observed_state = 'running' AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.target_id = environments.id AND o.state IN ('queued', 'running'))`
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM environments WHERE `+idle)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if !active[id] {
+			candidates = append(candidates, id)
+		}
+	}
+	rows.Close()
+
+	var stopped []string
+	for _, id := range candidates {
+		r.mu.Lock()
+		busy := r.active[id]
+		r.active[id] = true
+		r.mu.Unlock()
+		if busy {
+			continue
+		}
+		ok, err := r.reconcileOne(ctx, id, idle)
+		r.mu.Lock()
+		delete(r.active, id)
+		r.mu.Unlock()
+		if err != nil {
+			return stopped, err
+		}
+		if ok {
+			stopped = append(stopped, id)
+		}
+	}
+	r.Kick()
+	return stopped, nil
+}
+
+func (r *Runner) reconcileOne(ctx context.Context, id, idle string) (bool, error) {
+	var still int
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM environments WHERE id = ? AND `+idle, id).Scan(&still); err != nil || still == 0 {
+		return false, err
+	}
+	if err := r.worker.RemoveNetwork(ctx, id); err != nil {
+		return false, fmt.Errorf("reconcile %s: %w", id, err)
+	}
+	res, err := r.db.ExecContext(ctx, `UPDATE environments SET observed_state = 'stopped', desired_state = 'stopped', error = ?, updated_at = ? WHERE id = ? AND `+idle,
+		reconciledMessage, timestamp(), id)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }

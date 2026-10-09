@@ -171,7 +171,12 @@ func (r *recordingBackend) Inventory(context.Context) (Inventory, error) {
 
 func serve(t *testing.T, b Backend) *Client {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "w.sock")
+	dir, err := os.MkdirTemp("/tmp", "bfx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "w.sock")
 	l, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -215,5 +220,32 @@ func TestClientReturnsWorkerError(t *testing.T) {
 	c := serve(t, &recordingBackend{fail: errors.New("mkfs.ext4 failed")})
 	if err := c.CreateDisk(context.Background(), lifecycle.DiskSpec{DiskID: "disk-a"}); err == nil || err.Error() != "mkfs.ext4 failed" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestClientReportsUnavailableWorker(t *testing.T) {
+	c := NewClient(filepath.Join(t.TempDir(), "missing.sock"))
+	if err := c.StopVM(context.Background(), "env-a"); !errors.Is(err, lifecycle.ErrWorkerUnavailable) {
+		t.Fatalf("err = %v, want ErrWorkerUnavailable", err)
+	}
+	if err := serve(t, &recordingBackend{fail: errors.New("boom")}).StopVM(context.Background(), "env-a"); errors.Is(err, lifecycle.ErrWorkerUnavailable) {
+		t.Fatal("worker-reported error classified as unavailable")
+	}
+}
+
+func TestClientActiveVMs(t *testing.T) {
+	active, err := serve(t, &recordingBackend{}).ActiveVMs(context.Background())
+	if err != nil || !active["env-a"] || len(active) != 1 {
+		t.Fatalf("active = %v, %v", active, err)
+	}
+}
+
+func TestConsoleSummary(t *testing.T) {
+	panicked := "[    1.6] VFS: Cannot open root device\n[    1.6] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(254,0)\n[    1.6] Call Trace:\n[    1.6]  kernel_init+0x15/0x1b0"
+	if got := consoleSummary(panicked); got != "guest kernel panic: VFS: Unable to mount root fs on unknown-block(254,0)" {
+		t.Fatalf("summary = %q", got)
+	}
+	if got := consoleSummary("a\nb\nc\nd\ne\nf"); got != "b | c | d | e | f" {
+		t.Fatalf("summary = %q", got)
 	}
 }

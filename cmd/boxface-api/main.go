@@ -60,6 +60,7 @@ func serve(args []string) error {
 	workerSocket := fs.String("worker-socket", "/run/boxface/worker.sock", "host worker socket")
 	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
 	imagesDir := fs.String("images-dir", "/var/lib/boxface/images", "directory holding image artifact sets")
+	reconcileInterval := fs.Duration("reconcile-interval", 30*time.Second, "how often to compare environment state with the worker")
 	var capacity lifecycle.Capacity
 	fs.IntVar(&capacity.Environments, "max-environments", 4, "maximum environments; 0 means unlimited")
 	fs.IntVar(&capacity.VCPUs, "max-vcpus", 0, "maximum vCPUs across environments; 0 means unlimited")
@@ -75,7 +76,8 @@ func serve(args []string) error {
 		return err
 	}
 	defer db.Close()
-	runner := lifecycle.NewRunner(ctx, db, worker.NewClient(*workerSocket))
+	client := worker.NewClient(*workerSocket)
+	runner := lifecycle.NewRunner(ctx, db, client)
 	server := &api.Server{
 		Auth:         auth.New(db),
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
@@ -91,7 +93,18 @@ func serve(args []string) error {
 		srv.Shutdown(shutdown)
 	}()
 
+	reconcile(ctx, runner, client)
 	runner.Kick()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(*reconcileInterval):
+				reconcile(ctx, runner, client)
+			}
+		}
+	}()
 	slog.Info("boxface-api listening", "address", *listen, "version", version.Version)
 	err = srv.ListenAndServe()
 	runner.Wait()
@@ -99,6 +112,16 @@ func serve(args []string) error {
 		return nil
 	}
 	return err
+}
+
+func reconcile(ctx context.Context, runner *lifecycle.Runner, inv lifecycle.Inventory) {
+	stopped, err := runner.Reconcile(ctx, inv)
+	if err != nil {
+		slog.Warn("reconcile with worker failed; will retry", "error", err)
+	}
+	for _, id := range stopped {
+		slog.Info("environment marked stopped: VM not running", "environment", id)
+	}
 }
 
 func ownerFlags(name string, args []string) (string, string) {

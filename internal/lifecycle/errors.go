@@ -10,4 +10,5 @@ var (
 	ErrImageNotReady       = errors.New("image is not ready")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different parameters")
 	ErrCapacity            = errors.New("capacity exceeded")
+	ErrWorkerUnavailable   = errors.New("worker unavailable")
 )
