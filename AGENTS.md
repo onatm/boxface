@@ -64,6 +64,7 @@ Consult docs only when relevant to the task:
 - `task build` - server binaries for linux/amd64 and `boxfacectl` for linux/amd64 and linux/arm64, in `bin/`
 - `task test` - unit tests
 - `task lint` - `gofmt` check and `go vet`
+- `task integration` - builds `bin/linux-amd64/worker.integration.test`; run it as root on a KVM host with `BOXFACE_IT_IMAGE` set to a directory holding `vmlinux` and `rootfs.ext4`
 
 ### Post-Implementation Checklist
 

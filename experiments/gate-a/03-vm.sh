@@ -44,7 +44,7 @@ start() {
 {
   "boot-source": {
     "kernel_image_path": "$out/vmlinux",
-    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off net.ifnames=0"
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off net.ifnames=0 ip=172.16.0.2::172.16.0.1:255.255.255.252::eth0:off"
   },
   "drives": [
     {"drive_id": "rootfs", "path_on_host": "$out/rootfs.ext4", "is_root_device": true, "is_read_only": true},
