@@ -1,6 +1,6 @@
 # boxfacectl
 
-**Status:** Draft — proposed command contract
+**Status:** Draft — lifecycle subset implemented; the rest is a proposed command contract
 
 ---
 
@@ -43,6 +43,17 @@ boxfacectl upgrade travel --image IMAGE_ID
 boxfacectl delete travel
 boxfacectl delete experiment --purge-data
 ```
+
+### Implemented Subset
+
+The [lifecycle plan](../plans/2026-10-durable-lifecycle.md) implements `login`, `image import`, `image list`, `create`, `list`, `inspect`, `start`, `stop`, `delete`, and `operation`. The rest of the commands above remain proposed.
+
+- `login --server URL [--code CODE]` exchanges a one-time code from `boxface-api bootstrap` for a token. It prompts for the code when stdin is a terminal. One server is stored, with its token, in `$BOXFACE_CONFIG` or the user config directory (`boxface/config.json`, mode 0600); `server add` and named servers are deferred.
+- `create`, `start`, `stop`, and `delete` follow the operation and print each completed step, then the environment; `--no-wait` returns once the operation is accepted. Each invocation sends a fresh idempotency key and reuses it when retrying a request after a network failure.
+- Ctrl-C stops following, leaves the operation running on the server, and prints `boxfacectl operation <id> --follow` to resume. The event stream reconnects with `Last-Event-ID` after a dropped connection.
+- Environments are named by name or ID. A name matches the live environment first, then a deleted one whose disk is retained, so `delete NAME --purge-data` can purge it.
+- `delete` asks for the environment name to be typed unless `--yes` is given, and refuses when stdin is not a terminal. `--purge-data` also deletes the disk.
+- `--json` prints the result as JSON. Exit codes: 0 success, 1 error or failed operation, 2 usage, 130 interrupted.
 
 ### Behavior Rules
 
