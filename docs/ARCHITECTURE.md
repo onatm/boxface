@@ -59,7 +59,7 @@ The principles above are agreed requirements. The following implementation choic
 | Metadata | SQLite on one host | Transactional operations and recovery behaviour | Proposed |
 | Persistent disk | One ext4 data image per environment initially | Mount layout, backup and crash recovery | Proposed |
 | Access | SSH through the host on a private network | Tablet connectivity and authentication flow | Proposed |
-| Implementation language | Not selected | Prefer a small native service/CLI stack; choose during implementation | Proposed |
+| Implementation language | Not selected | Prefer a small native service/CLI stack; choose during implementation | Decided: Go |
 
 ## System Topology
 
@@ -228,7 +228,7 @@ Local metadata lives in SQLite on the host and is owned by the API. Essential re
 - [x] Select Firecracker or Cloud Hypervisor after the guest/Docker spike. Firecracker, provisional until confirmed on the ThinkCentre ([Gate A](./research/2026-10-gate-a.md)).
 - [x] Validate Home Manager artifact extraction/activation on Debian and choose a minimal profile exposure mechanism. Export `home-path` and its closure into the read-only root image, linked at `/opt/boxface/profile`; Home Manager activation is not run ([Gate B](./research/2026-10-gate-b.md)).
 - [x] Select guest kernel, root filesystem format, and Docker storage driver from measured compatibility. Linux 6.18 LTS from Firecracker's guest config plus a Boxface fragment, read-only ext4 root, containerd overlayfs snapshotter ([Gate A](./research/2026-10-gate-a.md)).
-- [ ] Choose implementation language and HTTP/RPC libraries after component boundaries are accepted.
+- [ ] Choose HTTP/RPC libraries after component boundaries are accepted. The implementation language is Go.
 - [ ] Confirm agent package availability, licensing constraints, release pinning and authentication flows. All four agents are packaged in nixpkgs 26.05 and pinned by nixpkgs revision; Claude Code is unfree ([Gate B](./research/2026-10-gate-b.md)). Claude Code authenticates with a Claude subscription by interactive login or a broker-delivered setup token ([Gate C](./research/2026-10-gate-c.md)); Codex, OpenCode, and Pi authentication remain.
 - [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow.
 

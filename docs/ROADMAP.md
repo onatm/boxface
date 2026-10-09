@@ -51,7 +51,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Outcome / problem | Strategic objective | Success signal | Confidence | Owner |
 |---|---|---|---|---|---|
-| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; implementation language and plan not yet chosen | onatm |
+| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; plan not yet written | onatm |
 | Next | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: depends on Now | onatm |
 | Next | Routine use still needs host internals | Keep operations low-burden | No manual host edits for configuration, upgrades, backups | Medium | onatm |
 | Next | The MVP is unproven in real work | Replace the laptop | Ten development days without Boxface-caused fallback | Medium | onatm |
@@ -66,10 +66,10 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Problem / opportunity:** A manually launched guest has no durable intent, so retries and restarts duplicate disks or orphan processes.
 - **Why now:** The baseline experiment passed on 2026-10-09, and every client feature depends on a durable lifecycle.
 - **Evidence:** Gates [A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), and [C](./research/2026-10-gate-c.md) validated the guest, profile, container runtime, personalisation, and credential delivery that the lifecycle launches and manages.
-- **Committed initiatives:** Choose the implementation language, then write the lifecycle plan in `docs/plans/`. The stage entered Now before its plan exists; the plan is its first deliverable.
+- **Committed initiatives:** Write the lifecycle plan in `docs/plans/`, implemented in Go. The stage entered Now before its plan exists; the plan is its first deliverable.
 - **Candidate bets:** API, SQLite metadata, worker, image registry, environment disks, asynchronous operations, recovery, and server diagnostics ([Boxface API](./designs/api.md), [Host Worker](./designs/host-worker.md), [Operations](./designs/operations.md)).
 - **Success and guardrails:** Retried creates return the same operation; API/worker restarts discover existing guests without duplicate launch. The API never runs client-supplied privileged commands; guests never reach the management plane.
-- **Dependencies:** Implementation language chosen; Firecracker confirmed on the ThinkCentre without nested virtualization.
+- **Dependencies:** Firecracker confirmed on the ThinkCentre without nested virtualization.
 - **Risks / assumptions:** Gate timings come from a nested-virtualization droplet and may not hold on the ThinkCentre. The broker stub had no real guest authorisation; the worker-to-guest channel must provide it.
 - **Confidence:** Medium.
 - **Owner:** onatm
@@ -163,7 +163,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | Firecracker supports rootless Docker and the guest kernel | High | Passed on a nested-virtualization droplet ([Gate A](./research/2026-10-gate-a.md)) | Repeat Gate A on the ThinkCentre; fallback Cloud Hypervisor | onatm |
 | Home Manager profile can be exported and exposed read-only on Debian | High | Validated ([Gate B](./research/2026-10-gate-b.md)) | Gate B | onatm |
 | Each agent has a supported authentication path in the guest | Medium | Claude Code validated with subscription login and setup token ([Gate C](./research/2026-10-gate-c.md)); others untested | Gate C and the daily terminal workflow | onatm |
-| Implementation language | High | Not selected | First initiative of durable server lifecycle, before its plan | onatm |
+| Implementation language | High | Decided: Go | Resolved 2026-10-09 | onatm |
 
 ## Review and Change Policy
 
@@ -177,6 +177,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 |---|---|---|---|
 | 2026-10-06 | Created the roadmap from the MVP delivery stages and productisation plan | Docs restructured into architecture, design, feature, and plan docs | onatm |
 | 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now before its plan exists, with the language choice and plan as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
+| 2026-10-09 | Chose Go as the implementation language | Owner decision; the lifecycle plan is the remaining first deliverable | onatm |
 
 ## Linked Documents
 

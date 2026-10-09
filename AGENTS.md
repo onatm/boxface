@@ -2,7 +2,7 @@ Boxface provides persistent development environments inside microVMs running on 
 
 ## Project Status
 
-Boxface is not implemented yet. The docs describe a proposed architecture and design; integrations are unvalidated until the feasibility gates in the [Roadmap](./docs/ROADMAP.md) pass. The implementation language is not chosen yet, and the repository has no build tooling.
+Boxface is not implemented yet. The docs describe a proposed architecture and design; the baseline feasibility gates passed (see `docs/research/`), and other integrations are validated as their [Roadmap](./docs/ROADMAP.md) stages run. The implementation language is Go; the repository has no build tooling yet.
 
 ## Project Documentation
 

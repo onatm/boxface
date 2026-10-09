@@ -86,7 +86,7 @@ Use SQLite transactions for local metadata.
 
 ## Open Questions
 
-- [ ] Choose implementation language and HTTP/RPC libraries after component boundaries are accepted.
+- [ ] Choose HTTP/RPC libraries after component boundaries are accepted. The implementation language is Go.
 
 ## References
 
