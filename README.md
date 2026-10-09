@@ -39,6 +39,7 @@ This writes static binaries to `bin/`:
 
 - `bin/linux-amd64/`: `boxface-api`, `boxface-worker`, and `boxfacectl`
 - `bin/linux-arm64/`: `boxfacectl`
+- `bin/darwin-arm64/` (Apple silicon) and `bin/darwin-amd64/` (Intel): `boxfacectl` for macOS
 
 Without Task:
 

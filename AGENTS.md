@@ -61,7 +61,7 @@ Consult docs only when relevant to the task:
 
 `Taskfile.yaml` is the source of truth for build, test, and lint commands. The code is Go.
 
-- `task build` - server binaries for linux/amd64 and `boxfacectl` for linux/amd64 and linux/arm64, in `bin/`
+- `task build` - server binaries for linux/amd64 and `boxfacectl` for linux/amd64, linux/arm64, darwin/arm64, and darwin/amd64, in `bin/`
 - `task test` - unit tests
 - `task lint` - `gofmt` check and `go vet`
 - `task integration` - builds `bin/linux-amd64/worker.integration.test`; run it as root on a KVM host with `BOXFACE_IT_IMAGE` set to a directory holding `vmlinux` and `rootfs.ext4`
