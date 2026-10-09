@@ -68,6 +68,27 @@ Normal development works without sudo, rootful Docker access, a writable system 
 3. Verify it runs on Debian without allowing the guest user to alter the managed profile or access a privileged Nix daemon.
 4. Pin package inputs and confirm cold boot needs no package fetch for declared tools.
 
+### Detailed Plan
+
+Scripts live in `experiments/gate-b/` as plain shell plus one Nix flake. Reuse Gate A's kernel, image configuration, and launch script; Gate B adds a profile build and injects the exported closure into the image tree before `mkfs.ext4`. The closure is embedded in the root image, as the [Image Builder](../designs/image-builder.md#processing-flow) allows for the MVP, so `/nix/store` inherits the read-only root.
+
+**Approach:** Use Home Manager only as a package generator. Build the standalone `activationPackage` and expose only its `home-path` (the `buildEnv` of `home.packages`) as `/opt/boxface/profile`. Do not run the activation script in the guest; inspect it and record what it would do. The gate answers whether `home-path` alone is enough.
+
+**Host:** The Gate A droplet, which also acts as the builder. Builder isolation is out of scope for Gate B.
+
+| Step | Work | Verify |
+|---|---|---|
+| 0. Builder | Install a pinned Nix release on the host with flakes enabled | Nix version recorded; no Nix installed in the guest image |
+| 1. Profile flake | Flake pinning nixpkgs `nixos-26.05` and Home Manager `release-26.05` by commit, with a standalone `homeConfigurations.dev` (user `dev`, home `/home/dev`) declaring Claude Code, Codex, OpenCode, Pi, mise, Node, Rust (`rustc`, `cargo`, and `gcc` as the linker), Git, and `cacert`. Allow unfree only for the packages that need it | Each agent's availability in the pinned nixpkgs recorded; a missing agent is packaged in the flake or recorded as a gap; unfree packages and licences recorded |
+| 2. Build and inspect | Build `activationPackage`; list the activation script's actions and generated files | `home-path/bin` contains every declared tool; activation actions recorded with which ones `home-path` makes unnecessary |
+| 3. Export | Compute the closure of `home-path` with `nix-store -qR`; copy it into the image tree at `/nix/store`, root-owned; create `/opt/boxface/profile` as a root-owned symlink to `home-path`; no Nix database, daemon, or channels | Closure path count and size recorded; `nix`, `nix-daemon`, and `home-manager` absent from the image unless a declared package pulls them in, in which case record which |
+| 4. Shell exposure | Put `/opt/boxface/profile/bin` first on the baseline PATH through `/etc/environment` (Gate A finding 3); set `SSL_CERT_FILE` and `LOCALE_ARCHIVE` there if Nix-built tools need them | `ssh dev@guest 'command -v claude codex opencode pi mise node cargo'` resolves to `/nix/store` paths in non-interactive and login shells |
+| 5. Boundaries | Rerun Gate A's `verify-boundaries.sh`, plus profile checks | All Gate A checks still pass; writes under `/nix/store` and `/opt/boxface` fail with EROFS; no `/nix/var/nix/daemon-socket`; `dev` cannot replace the profile; no `~/.nix-profile`, `~/.local/state/home-manager`, or Home Manager-generated files in `/home/dev` |
+| 6. Offline boot | Launch with `NO_NAT=1` | Every declared tool starts and reports its version with no network; a guest without network fetches nothing at boot |
+| 7. Workload | With NAT enabled: compile and run a small Rust crate with `cargo`; run a Node script; `mise use` a different Node version in a `/workspace` project and run the four agent launchers from inside it; mise runtimes land under `/home/dev` | Rust and Node work; inside the project `node --version` reports the mise version while every agent launcher still starts, its interpreter path pointing into `/nix/store`; agent authentication is Gate C |
+| 8. Gate A carryover | Confirm `docker-buildx-plugin` (Gate A finding 4) | `docker buildx version` works and the Gate A Compose build uses BuildKit |
+| 9. Measurements | Profile build time (cold and cached), closure size and path count, rootfs size and image build time compared with Gate A, launch-to-readiness time, idle guest memory | Recorded in `docs/research/2026-10-gate-b.md` with nixpkgs and Home Manager revisions |
+
 ### Pass
 
 Representative agents, mise, Node and Rust execute correctly; project-specific runtime overrides do not break agent launchers.

@@ -1,0 +1,2 @@
+DOCKER_HOST=unix:///run/user/1000/docker.sock
+PATH=/opt/boxface/profile/bin:/usr/local/bin:/usr/bin:/bin

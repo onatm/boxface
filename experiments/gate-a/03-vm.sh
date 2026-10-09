@@ -29,8 +29,12 @@ start() {
   ip link set "$tap" up
   sysctl -qw net.ipv4.ip_forward=1
   uplink="$(ip route show default | awk '{print $5; exit}')"
-  iptables -t nat -C POSTROUTING -s 172.16.0.0/30 -o "$uplink" -j MASQUERADE 2>/dev/null \
-    || iptables -t nat -A POSTROUTING -s 172.16.0.0/30 -o "$uplink" -j MASQUERADE
+  if [ "${NO_NAT:-0}" = 1 ]; then
+    iptables -t nat -D POSTROUTING -s 172.16.0.0/30 -o "$uplink" -j MASQUERADE 2>/dev/null || true
+  else
+    iptables -t nat -C POSTROUTING -s 172.16.0.0/30 -o "$uplink" -j MASQUERADE 2>/dev/null \
+      || iptables -t nat -A POSTROUTING -s 172.16.0.0/30 -o "$uplink" -j MASQUERADE
+  fi
   iptables -C FORWARD -i "$tap" -o "$uplink" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$tap" -o "$uplink" -j ACCEPT
   iptables -C FORWARD -i "$uplink" -o "$tap" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
     || iptables -A FORWARD -i "$uplink" -o "$tap" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT

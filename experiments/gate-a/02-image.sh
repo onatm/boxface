@@ -36,6 +36,7 @@ start=$(date +%s)
 end=$(date +%s)
 
 tree="$work/image/rootfs"
+for extra in ${EXTRA_TREES:-}; do cp -a --no-preserve=ownership "$extra"/. "$tree"/; done
 fail=0
 if compgen -G "$tree/etc/ssh/ssh_host_*" > /dev/null; then echo "SSH host keys baked into image" >&2; fail=1; fi
 machine_id="$(cat "$tree/etc/machine-id" 2>/dev/null || true)"
