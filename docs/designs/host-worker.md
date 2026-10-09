@@ -23,7 +23,7 @@ The host worker performs the narrow set of privileged host operations Boxface ne
 
 ### Interfaces & Contracts
 
-- The worker runs as root as `boxface-worker` and holds no database. It accepts validated identifiers and structured specifications from the API as JSON over HTTP on a Unix socket readable only by the `boxface` group, and checks the caller's UID with `SO_PEERCRED`.
+- The worker runs as root as `boxface-worker` and holds no database. Its systemd unit is `Type=notify`: it reports ready only once its socket is listening, so the API, ordered after it, can reconcile at startup. It accepts validated identifiers and structured specifications from the API as JSON over HTTP on a Unix socket readable only by the `boxface` group, and checks the caller's UID with `SO_PEERCRED`.
 - Every call creates or removes one resource idempotently: repeating a call that already took effect changes nothing.
 - It never runs shell strings supplied by clients; `exec` arguments travel as an argument array (see [boxfacectl](./cli.md)).
 - The hypervisor runtime sits behind a narrow interface. Firecracker is the first candidate; Cloud Hypervisor is the fallback. Implement one backend first.
