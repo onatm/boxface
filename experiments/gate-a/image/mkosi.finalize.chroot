@@ -7,6 +7,9 @@ echo 'dev:100000:65536' > /etc/subuid
 echo 'dev:100000:65536' > /etc/subgid
 mkdir -p /home/dev /workspace /mnt/data /var/lib/boxface
 
+sed -i -E '/^AcceptEnv/ s/ (LANG|LC_\*)//g; /^AcceptEnv$/d' /etc/ssh/sshd_config
+if grep -qE '^AcceptEnv.*(LANG|LC_)' /etc/ssh/sshd_config; then echo "sshd still accepts client locale" >&2; exit 1; fi
+
 rm -f /etc/resolv.conf
 echo 'nameserver 1.1.1.1' > /etc/resolv.conf
 

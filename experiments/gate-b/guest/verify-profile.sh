@@ -19,6 +19,10 @@ check "home-manager not on PATH" sh -c '! command -v home-manager'
 check "no Nix or Home Manager state in /home/dev" sh -c \
   'for p in .nix-profile .nix-defexpr .local/state/nix .local/state/home-manager .config/home-manager; do test ! -e "$HOME/$p" || exit 1; done'
 
+check "LANG is C.UTF-8" test "${LANG:-}" = C.UTF-8
+check "client LC_ALL not accepted" test -z "${LC_ALL:-}"
+check "no setlocale warnings" sh -c '! { bash -c true; cargo --version; pi --version; } 2>&1 | grep -q setlocale'
+
 for t in $tools; do
   check "$t resolves to the profile (non-interactive)" test "$(command -v "$t")" = "/opt/boxface/profile/bin/$t"
   check "$t resolves to the profile (login shell)" test "$(bash -lc "command -v $t")" = "/opt/boxface/profile/bin/$t"
