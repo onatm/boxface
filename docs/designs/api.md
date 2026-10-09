@@ -1,6 +1,6 @@
 # Boxface API
 
-**Status:** Draft — proposed routes; not an existing API
+**Status:** Draft — proposed routes, not yet implemented; implementation decisions confirmed in the [Durable Server Lifecycle](../plans/2026-10-durable-lifecycle.md#decisions) plan
 
 ---
 
@@ -50,6 +50,13 @@ All routes are proposed and versioned under `/v1`. Require authentication for ev
 
 Long-running mutations return `202 Accepted`, operation ID, and target ID. Idempotency and serialization rules are in [Operations](./operations.md#interfaces--contracts).
 
+### Implementation
+
+- `boxface-api` runs as an unprivileged `boxface` user and is the only process that opens SQLite.
+- HTTP uses the Go standard library `net/http`; operation events are server-sent events.
+- SQLite uses `modernc.org/sqlite` (pure Go) in WAL mode, with schema migrations embedded in the binary.
+- The API calls the [Host Worker](./host-worker.md#interfaces--contracts) over its Unix socket and runs durable operations itself.
+
 ### Authentication
 
 - For the single-owner MVP, use a one-time local bootstrap flow to issue client credentials.
@@ -75,7 +82,7 @@ Use SQLite transactions for local metadata.
 | Backup | ID, source environment/image, checksum, data version, storage location |
 
 - Enforce owner/name uniqueness for environments and immutable revision records.
-- Persist process identity with host boot identity and runtime metadata; PID alone is insufficient after restart.
+- VM process identity is the worker's systemd unit name, not a PID; see [Host Worker](./host-worker.md#vm-processes).
 - State machines are owned by [Host Worker](./host-worker.md#environment-state-machine) (environment), [Operations](./operations.md#lifecycle) (operation), and [Access and Sessions](./access-and-sessions.md#session-state) (session).
 
 ### Security & Privacy
@@ -86,7 +93,7 @@ Use SQLite transactions for local metadata.
 
 ## Open Questions
 
-- [ ] Choose HTTP/RPC libraries after component boundaries are accepted. The implementation language is Go.
+- [x] Choose implementation language and HTTP/RPC libraries. Go with the standard library `net/http` and server-sent events.
 
 ## References
 
