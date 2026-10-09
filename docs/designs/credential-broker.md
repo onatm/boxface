@@ -43,6 +43,8 @@ The credential broker resolves server-approved secret bindings at launch time an
 
 API-key and interactive subscription login paths differ between agents. Validate at least one supported path per agent. Agent-managed OAuth state may need persistent user storage and must be treated as sensitive backup content. Do not promise a universal environment-variable authentication interface.
 
+Claude Code supports both subscription paths ([Gate C](../research/2026-10-gate-c.md)): interactive login over SSH stores plaintext tokens in `~/.claude/.credentials.json` on the data disk, and a `claude setup-token` token stored with the secret provider can be delivered per session as `CLAUDE_CODE_OAUTH_TOKEN` without writing a credentials file.
+
 ### Data Model / State
 
 - Credential binding: ID, provider reference, permitted consumer/scope, owner; no plaintext value.

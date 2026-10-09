@@ -1,6 +1,6 @@
 # Baseline Experiment
 
-**Status:** In progress — Gate A passed ([results](../research/2026-10-gate-a.md)); Gate B passed ([results](../research/2026-10-gate-b.md))
+**Status:** In progress — Gate A passed ([results](../research/2026-10-gate-a.md)); Gate B passed ([results](../research/2026-10-gate-b.md)); Gate C passed ([results](../research/2026-10-gate-c.md))
 
 **Design:** [Architecture](../ARCHITECTURE.md), [Guest](../designs/guest.md), [Image Builder](../designs/image-builder.md), [Credential Broker](../designs/credential-broker.md)
 

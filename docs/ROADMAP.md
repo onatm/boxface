@@ -165,7 +165,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | ThinkCentre hardware supports the needed environments | High | Capacity not measured | Measure CPU, memory, and disk in the baseline experiment | onatm |
 | Firecracker supports rootless Docker and the guest kernel | High | None | Gate A; fallback Cloud Hypervisor | onatm |
 | Home Manager profile can be exported and exposed read-only on Debian | High | Validated ([Gate B](./research/2026-10-gate-b.md)) | Gate B | onatm |
-| Each agent has a supported authentication path in the guest | Medium | None | Gate C and the daily terminal workflow | onatm |
+| Each agent has a supported authentication path in the guest | Medium | Claude Code validated with subscription login and setup token ([Gate C](./research/2026-10-gate-c.md)); others untested | Gate C and the daily terminal workflow | onatm |
 | Implementation language | Medium | Not selected | Choose after component boundaries are accepted | onatm |
 
 ## Review and Change Policy

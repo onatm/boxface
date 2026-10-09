@@ -24,6 +24,8 @@ chezmoi seeds a new environment's home from a pinned profile revision and applie
 
 Use chezmoi to seed a new home from a pinned profile revision. Record the applied revision and managed file manifest. Reboot is not permission to overwrite the home.
 
+Gate C validated seeding from a read-only, image-embedded source applied once per data disk by a user service, with the revision and managed files recorded under `~/.local/state/boxface/` ([Gate C](../research/2026-10-gate-c.md)). Agents write their own files beside managed ones, as Claude Code does in `~/.claude`, so dotfiles manage individual files, never agent-written ones.
+
 ### Profile Updates
 
 For MVP profile updates:
@@ -45,7 +47,7 @@ For MVP profile updates:
 
 ## Open Questions
 
-- [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow.
+- [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow. `chezmoi status` reports a user-edited managed file as `MM` ([Gate C](../research/2026-10-gate-c.md)); applying a newer revision is untested.
 
 ## References
 
