@@ -1,0 +1,2 @@
+# Managed by chezmoi from the Boxface Gate C dotfiles.
+alias ll='ls -l'

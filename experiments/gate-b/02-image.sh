@@ -9,4 +9,4 @@ gate_a_out="${GATE_A_WORK:-/var/tmp/boxface-gate-a}/out"
 mkdir -p "$WORK/out"
 cp "$gate_a_out/vmlinux" "$WORK/out/vmlinux"
 
-EXTRA_TREES="$WORK/profile-tree $here/image" "$here/../gate-a/02-image.sh"
+EXTRA_TREES="$WORK/profile-tree $here/image ${IMAGE_TREES:-}" "$here/../gate-a/02-image.sh"

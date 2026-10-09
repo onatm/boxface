@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply Boxface personal configuration on first initialisation
+ConditionPathExists=!%h/.local/state/boxface/personalisation
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/boxface-personalise
+
+[Install]
+WantedBy=default.target

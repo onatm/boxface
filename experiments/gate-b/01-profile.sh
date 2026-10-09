@@ -3,9 +3,10 @@ set -euo pipefail
 
 NIX_VERSION=2.35.2
 NIX_INSTALLER_SHA256=9adda97297d9e8ab360df95c729eabff4f4f93d6db091953c3a68f29e3fb130c
-TOOLS="claude codex opencode pi mise node npm rustc cargo cc git"
+TOOLS="${TOOLS:-claude codex opencode pi mise node npm rustc cargo cc git}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
+flake="${PROFILE_FLAKE:-$here/profile}"
 work="${WORK:-/var/tmp/boxface-gate-b}"
 out="$work/out"
 tree="$work/profile-tree"
@@ -24,7 +25,7 @@ export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 export NIX_CONFIG="experimental-features = nix-command flakes"
 
 start=$(date +%s)
-nix build "$here/profile#homeConfigurations.dev.activationPackage" -o "$work/generation"
+nix build "$flake#homeConfigurations.dev.activationPackage" -o "$work/generation"
 end=$(date +%s)
 
 home_path="$(readlink -f "$work/generation/home-path")"
@@ -46,7 +47,7 @@ ln -s "$home_path" "$tree/opt/boxface/profile"
 
 {
   echo "nix: $(nix --version)"
-  nix flake metadata "$here/profile" | grep -E 'Locked URL|nixpkgs|home-manager'
+  nix flake metadata "$flake" | grep -E 'Locked URL|nixpkgs|home-manager'
   echo "unfree allowed: claude-code"
   echo "profile build seconds: $((end - start)) on $(nproc) vcpus"
   echo "home-path: $home_path"

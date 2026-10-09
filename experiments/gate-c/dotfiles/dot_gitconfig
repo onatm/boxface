@@ -1,0 +1,5 @@
+[user]
+	name = Boxface Gate C
+	email = gate-c@boxface.invalid
+[init]
+	defaultBranch = main

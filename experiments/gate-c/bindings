@@ -1,0 +1,4 @@
+# binding-id    environment-variable     1Password reference
+dummy           GATE_C_DUMMY             op://boxface-gate-c/gate-c-dummy/password
+claude-token    CLAUDE_CODE_OAUTH_TOKEN  op://boxface-gate-c/claude-setup-token/password
+missing         GATE_C_MISSING           op://boxface-gate-c/gate-c-missing/password
