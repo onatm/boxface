@@ -51,7 +51,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Outcome / problem | Strategic objective | Success signal | Confidence | Owner |
 |---|---|---|---|---|---|
-| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; plan not yet written | onatm |
+| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; plan written, implementation starting | onatm |
 | Next | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: depends on Now | onatm |
 | Next | Routine use still needs host internals | Keep operations low-burden | No manual host edits for configuration, upgrades, backups | Medium | onatm |
 | Next | The MVP is unproven in real work | Replace the laptop | Ten development days without Boxface-caused fallback | Medium | onatm |
@@ -66,7 +66,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Problem / opportunity:** A manually launched guest has no durable intent, so retries and restarts duplicate disks or orphan processes.
 - **Why now:** The baseline experiment passed on 2026-10-09, and every client feature depends on a durable lifecycle.
 - **Evidence:** Gates [A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), and [C](./research/2026-10-gate-c.md) validated the guest, profile, container runtime, personalisation, and credential delivery that the lifecycle launches and manages.
-- **Committed initiatives:** Write the lifecycle plan in `docs/plans/`, implemented in Go. The stage entered Now before its plan exists; the plan is its first deliverable.
+- **Committed initiatives:** [Durable Server Lifecycle](./plans/2026-10-durable-lifecycle.md) plan, implemented in Go, milestones M0–M6.
 - **Candidate bets:** API, SQLite metadata, worker, image registry, environment disks, asynchronous operations, recovery, and server diagnostics ([Boxface API](./designs/api.md), [Host Worker](./designs/host-worker.md), [Operations](./designs/operations.md)).
 - **Success and guardrails:** Retried creates return the same operation; API/worker restarts discover existing guests without duplicate launch. The API never runs client-supplied privileged commands; guests never reach the management plane.
 - **Dependencies:** Firecracker confirmed on the ThinkCentre without nested virtualization.
