@@ -2,7 +2,6 @@ package lifecycle
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -11,6 +10,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/onatm/boxface/internal/id"
 )
 
 const (
@@ -31,31 +32,31 @@ type CreateRequest struct {
 }
 
 type Accepted struct {
-	OperationID   string
-	EnvironmentID string
+	OperationID   string `json:"operation_id"`
+	EnvironmentID string `json:"environment_id"`
 }
 
 type Operation struct {
-	ID             string
-	Type           string
-	TargetID       string
-	State          string
-	ErrorCode      string
-	ErrorMessage   string
-	CompletedSteps []string
+	ID             string   `json:"id"`
+	Type           string   `json:"type"`
+	TargetID       string   `json:"target_id"`
+	State          string   `json:"state"`
+	ErrorCode      string   `json:"error_code,omitempty"`
+	ErrorMessage   string   `json:"error_message,omitempty"`
+	CompletedSteps []string `json:"completed_steps"`
 }
 
 type Environment struct {
-	ID            string
-	Name          string
-	ImageID       string
-	VCPUs         int
-	MemoryMiB     int
-	DesiredState  string
-	ObservedState string
-	Error         string
-	DiskID        string
-	DiskRetention string
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ImageID       string `json:"image_id"`
+	VCPUs         int    `json:"vcpus"`
+	MemoryMiB     int    `json:"memory_mib"`
+	DesiredState  string `json:"desired_state"`
+	ObservedState string `json:"observed_state"`
+	Error         string `json:"error,omitempty"`
+	DiskID        string `json:"disk_id"`
+	DiskRetention string `json:"disk_retention"`
 }
 
 type targetParams struct {
@@ -63,13 +64,21 @@ type targetParams struct {
 	Purge         bool   `json:"purge,omitempty"`
 }
 
-type Service struct {
-	db     *sql.DB
-	runner *Runner
+type Capacity struct {
+	Environments int
+	VCPUs        int
+	MemoryMiB    int
+	DiskGiB      int
 }
 
-func NewService(db *sql.DB, runner *Runner) *Service {
-	return &Service{db: db, runner: runner}
+type Service struct {
+	db       *sql.DB
+	runner   *Runner
+	capacity Capacity
+}
+
+func NewService(db *sql.DB, runner *Runner, capacity Capacity) *Service {
+	return &Service{db: db, runner: runner, capacity: capacity}
 }
 
 func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, req CreateRequest) (Accepted, error) {
@@ -98,7 +107,10 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, re
 		if taken > 0 {
 			return "", ErrNameTaken
 		}
-		envID, diskID, now := newID(), newID(), timestamp()
+		if err := s.checkCapacity(ctx, tx, req); err != nil {
+			return "", err
+		}
+		envID, diskID, now := id.New(), id.New(), timestamp()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO environments (id, owner_id, name, image_id, vcpus, memory_mib, desired_state, observed_state, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, 'running', 'pending', ?, ?)`, envID, ownerID, req.Name, req.ImageID, req.VCPUs, req.MemoryMiB, now, now); err != nil {
 			return "", err
@@ -178,7 +190,7 @@ func (s *Service) submit(ctx context.Context, ownerID, idempotencyKey, opType st
 		}
 	}
 
-	opID := newID()
+	opID := id.New()
 	now := timestamp()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO operations (id, owner_id, type, target_id, idempotency_key, request_hash, params, state, created_at, updated_at)
 		VALUES (?, ?, ?, '', ?, ?, ?, 'queued', ?, ?)`, opID, ownerID, opType, key, hash, string(encoded), now, now); err != nil {
@@ -199,7 +211,7 @@ func (s *Service) submit(ctx context.Context, ownerID, idempotencyKey, opType st
 }
 
 func (s *Service) Operation(ctx context.Context, ownerID, id string) (Operation, error) {
-	op := Operation{ID: id}
+	op := Operation{ID: id, CompletedSteps: []string{}}
 	err := s.db.QueryRowContext(ctx, `SELECT type, target_id, state, error_code, error_message FROM operations WHERE id = ? AND owner_id = ?`, id, ownerID).
 		Scan(&op.Type, &op.TargetID, &op.State, &op.ErrorCode, &op.ErrorMessage)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -234,18 +246,65 @@ func (s *Service) Environment(ctx context.Context, ownerID, id string) (Environm
 	return env, err
 }
 
+func (s *Service) checkCapacity(ctx context.Context, tx *sql.Tx, req CreateRequest) error {
+	var envs, vcpus, memory, disk int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(vcpus), 0), coalesce(sum(memory_mib), 0) FROM environments WHERE observed_state <> 'deleted'`).
+		Scan(&envs, &vcpus, &memory); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(sum(size_gib), 0) FROM data_disks WHERE retention <> 'purged'`).Scan(&disk); err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		name           string
+		used, add, max int
+	}{
+		{"environments", envs, 1, s.capacity.Environments},
+		{"vcpus", vcpus, req.VCPUs, s.capacity.VCPUs},
+		{"memory_mib", memory, req.MemoryMiB, s.capacity.MemoryMiB},
+		{"disk_gib", disk, req.DiskGiB, s.capacity.DiskGiB},
+	} {
+		if c.max > 0 && c.used+c.add > c.max {
+			return fmt.Errorf("%w: %s would be %d, limit %d", ErrCapacity, c.name, c.used+c.add, c.max)
+		}
+	}
+	return nil
+}
+
+func (s *Service) Environments(ctx context.Context, ownerID string) ([]Environment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id FROM environments e JOIN data_disks d ON d.environment_id = e.id
+		WHERE e.owner_id = ? AND NOT (e.observed_state = 'deleted' AND d.retention = 'purged') ORDER BY e.created_at, e.rowid`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	envs := []Environment{}
+	for _, id := range ids {
+		env, err := s.Environment(ctx, ownerID, id)
+		if err != nil {
+			return nil, err
+		}
+		envs = append(envs, env)
+	}
+	return envs, nil
+}
+
 func audit(ctx context.Context, tx *sql.Tx, ownerID, action, targetID, opID string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO audit_events (owner_id, action, target_id, operation_id, created_at) VALUES (?, ?, ?, ?, ?)`,
 		ownerID, action, targetID, opID, timestamp())
 	return err
-}
-
-func newID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func timestamp() string {

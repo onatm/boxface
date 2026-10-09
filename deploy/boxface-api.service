@@ -1,0 +1,16 @@
+[Unit]
+Description=Boxface API
+After=boxface-worker.service
+Wants=boxface-worker.service
+
+[Service]
+User=boxface
+Group=boxface
+ExecStart=/usr/local/bin/boxface-api serve
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/boxface
+
+[Install]
+WantedBy=multi-user.target

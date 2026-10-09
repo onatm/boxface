@@ -1,21 +1,144 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/onatm/boxface/internal/api"
+	"github.com/onatm/boxface/internal/auth"
+	"github.com/onatm/boxface/internal/images"
+	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/store"
 	"github.com/onatm/boxface/internal/version"
+	"github.com/onatm/boxface/internal/worker"
 )
 
-func main() {
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	flag.Parse()
+const usage = `usage:
+  boxface-api serve [flags]
+  boxface-api bootstrap -owner NAME [-db PATH]
+  boxface-api revoke -owner NAME [-db PATH]
+  boxface-api -version`
 
-	if *showVersion {
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "-version", "--version":
 		fmt.Println("boxface-api", version.Version)
 		return
+	case "serve":
+		err = serve(os.Args[2:])
+	case "bootstrap":
+		err = bootstrap(os.Args[2:])
+	case "revoke":
+		err = revoke(os.Args[2:])
+	default:
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
 	}
-	flag.Usage()
-	os.Exit(2)
+	if err != nil {
+		slog.Error("boxface-api", "error", err)
+		os.Exit(1)
+	}
+}
+
+func serve(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:7443", "address to serve the API on")
+	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
+	workerSocket := fs.String("worker-socket", "/run/boxface/worker.sock", "host worker socket")
+	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
+	imagesDir := fs.String("images-dir", "/var/lib/boxface/images", "directory holding image artifact sets")
+	var capacity lifecycle.Capacity
+	fs.IntVar(&capacity.Environments, "max-environments", 4, "maximum environments; 0 means unlimited")
+	fs.IntVar(&capacity.VCPUs, "max-vcpus", 0, "maximum vCPUs across environments; 0 means unlimited")
+	fs.IntVar(&capacity.MemoryMiB, "max-memory-mib", 0, "maximum guest memory across environments; 0 means unlimited")
+	fs.IntVar(&capacity.DiskGiB, "max-disk-gib", 0, "maximum data disk size across environments, including retained disks; 0 means unlimited")
+	fs.Parse(args)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	runner := lifecycle.NewRunner(ctx, db, worker.NewClient(*workerSocket))
+	server := &api.Server{
+		Auth:         auth.New(db),
+		Lifecycle:    lifecycle.NewService(db, runner, capacity),
+		Images:       images.NewRegistry(db, *importDir, *imagesDir),
+		Capacity:     capacity,
+		PollInterval: 500 * time.Millisecond,
+	}
+	srv := &http.Server{Addr: *listen, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdown)
+	}()
+
+	runner.Kick()
+	slog.Info("boxface-api listening", "address", *listen, "version", version.Version)
+	err = srv.ListenAndServe()
+	runner.Wait()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func ownerFlags(name string, args []string) (string, string) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	owner := fs.String("owner", "", "owner name")
+	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
+	fs.Parse(args)
+	if *owner == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	return *owner, *dbPath
+}
+
+func bootstrap(args []string) error {
+	owner, dbPath := ownerFlags("bootstrap", args)
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	code, err := auth.New(db).Bootstrap(context.Background(), owner, 15*time.Minute)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("one-time login code for %s, valid for 15 minutes:\n%s\n", owner, code)
+	return nil
+}
+
+func revoke(args []string) error {
+	owner, dbPath := ownerFlags("revoke", args)
+	db, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	n, err := auth.New(db).RevokeAll(context.Background(), owner)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("revoked %d tokens for %s\n", n, owner)
+	return nil
 }

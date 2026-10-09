@@ -65,6 +65,7 @@ Consult docs only when relevant to the task:
 - `task test` - unit tests
 - `task lint` - `gofmt` check and `go vet`
 - `task integration` - builds `bin/linux-amd64/worker.integration.test`; run it as root on a KVM host with `BOXFACE_IT_IMAGE` set to a directory holding `vmlinux` and `rootfs.ext4`
+- `deploy/install.sh bin/linux-amd64` - installs `boxface-api` and `boxface-worker` as systemd services on a host, as root
 
 ### Post-Implementation Checklist
 

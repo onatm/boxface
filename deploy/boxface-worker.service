@@ -1,0 +1,11 @@
+[Unit]
+Description=Boxface host worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/boxface-worker
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

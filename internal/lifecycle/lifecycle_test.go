@@ -109,7 +109,7 @@ func newService(t *testing.T, db *sql.DB, w Worker) (*Service, *Runner, context.
 	ctx, cancel := context.WithCancel(context.Background())
 	r := NewRunner(ctx, db, w)
 	t.Cleanup(func() { cancel(); r.Wait() })
-	return NewService(db, r), r, cancel
+	return NewService(db, r, Capacity{}), r, cancel
 }
 
 var travel = CreateRequest{Name: "travel", ImageID: image, VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}
