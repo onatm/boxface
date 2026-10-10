@@ -1,6 +1,6 @@
 # Install, Configure, Connect
 
-**Status:** Planned — decisions confirmed by the owner on 2026-10-10
+**Status:** Done — C0–C7 complete and acceptance A1–A8 passed on the droplet on 2026-10-10 ([results](../research/2026-10-connect.md#acceptance-c7)); one open question below
 
 **Roadmap:** [Daily terminal workflow](../ROADMAP.md#daily-terminal-workflow), with the configuration part of the [Web UI](../designs/web-ui.md) pulled forward from [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations)
 
@@ -144,7 +144,7 @@ The web UI is for configuration and preparation; `boxfacectl` is for provisionin
 | C5. Client *(done)* | `login URL`; `create NAME` with all flags optional; `connect NAME [--session S]`, which starts a stopped environment first; hidden `tunnel` (HTTP/1.1 forced). Add `tmux` to the profile and rebuild the image | `connect` to a stopped environment starts it and connects; Ctrl-C while starting leaves the start running; Ctrl-C and network loss inside the session leave tmux running |
 | C5b. Tailscale identity *(done)* | Generic `identities (provider, subject, owner)` table; `POST /v1/login` without a code signs in with the request's identity on the Tailscale socket; `GET`/`POST`/`DELETE /v1/identities`, where `POST` binds the requesting device's own login; `bootstrap -tailscale-login`; `login URL` tries the identity first and falls back to the code prompt. Codes remain the method for public-address hosts, and an OIDC provider for a hosted version fits the same table | Tests: the header is ignored off the socket; an unbound or missing login falls back to codes without counting toward the rate limit; a login cannot be bound to two owners or bound from another listener; unbinding stops identity logins |
 | C6. Web UI *(done)* | The pages above, `web_sessions` with cookie sessions, cross-origin protection, and the setup URL printed by `install.sh` | Works through both exposures; a cross-origin POST is rejected; no secret values are shown |
-| C7. Acceptance | Scenarios below on the droplet. The ThinkCentre repeat belongs to the roadmap's final stage | Results recorded in `docs/research/2026-10-connect.md` |
+| C7. Acceptance *(done)* | Scenarios below on the droplet. The ThinkCentre repeat belongs to the roadmap's final stage | Results recorded in `docs/research/2026-10-connect.md` |
 
 ## Acceptance Scenarios
 
@@ -172,3 +172,12 @@ The web UI is for configuration and preparation; `boxfacectl` is for provisionin
 - The design docs record these decisions: [Access and Sessions](../designs/access-and-sessions.md), [boxfacectl](../designs/cli.md), [Web UI](../designs/web-ui.md), [Boxface API](../designs/api.md), and [Host Worker](../designs/host-worker.md).
 - [Architecture](../ARCHITECTURE.md#decision-status) moves Access from proposed to decided.
 - The README install section is rewritten around the setup URL.
+
+## Open Questions
+
+- **Keys for devices that log in after an environment exists.** Each `boxfacectl login` registers a new device key, but an environment accepts only the keys registered when it was created, so a second device cannot connect to existing environments ([C7 finding](../research/2026-10-connect.md#finding-a-new-device-cannot-connect-to-existing-environments)). Options:
+  1. The worker rewrites `authorized_keys` on the stopped data disk at each start, from the owner's current keys recorded with the start operation. Simple and offline, but a running environment picks up a new key only after a restart.
+  2. The guest fetches its authorized keys at boot and on demand over vsock from the worker, with `AuthorizedKeysCommand`. Changes apply at once, at the cost of a new guest-to-worker channel.
+  3. SSH certificates: the API signs each device key with a per-owner CA that environments trust (`TrustedUserCAKeys`). Devices and revocation never touch the guest, matching the Access and Sessions refinement; certificate issuance and CA key custody are new work.
+  
+  Whichever is chosen, `connect` should report an authentication failure as a key problem, not as a lost connection.

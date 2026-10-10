@@ -1,6 +1,6 @@
 # Access and Sessions
 
-**Status:** Draft — proposed design
+**Status:** Terminal transport implemented and accepted ([connect plan](../plans/2026-10-connect-and-web-ui.md), [results](../research/2026-10-connect.md)); session records, credential delivery, and port forwarding proposed
 
 ---
 
@@ -23,10 +23,10 @@ Clients control environments through the API and reach the guest terminal and ap
 
 ### Terminal Transport
 
-- Use the API to authorise access, then OpenSSH for the data path through the host gateway.
-- Initial implementation can register a user's public key and manage narrowly scoped guest access. Credential expiry and revocation must be reflected on subsequent connections. Short-lived SSH certificates are an optional refinement, not required to build the first terminal path.
-- The gateway resolves environment UUIDs to worker-owned guest endpoints. It must not become an arbitrary tunnel to host management services.
-- Pin host identity and maintain per-environment guest identity across restarts. Validate guest host identity; never disable host-key checking globally.
+- Use the API to authorise access, then OpenSSH for the data path through the host gateway. *Implemented:* `boxfacectl connect` runs the user's `ssh` with `boxfacectl tunnel` as `ProxyCommand`; the tunnel is `GET /v1/environments/{id}/ssh` with `Upgrade: boxface-ssh` over HTTP/1.1, so it works the same over TLS on a public address and through `tailscale serve`. Every token check happens per tunnel, so a revoked token is refused on the next connection.
+- Initial implementation can register a user's public key and manage narrowly scoped guest access. Credential expiry and revocation must be reflected on subsequent connections. Short-lived SSH certificates are an optional refinement, not required to build the first terminal path. *Implemented:* `login` registers a device key; keys are seeded at create. Keys for devices that log in later are an [open question](../plans/2026-10-connect-and-web-ui.md#open-questions).
+- The gateway resolves environment UUIDs to worker-owned guest endpoints. It must not become an arbitrary tunnel to host management services. *Implemented:* the API dials only port 22 of the worker-reported address of an owned, `running` environment, and records each tunnel as `environment.connect`.
+- Pin host identity and maintain per-environment guest identity across restarts. Validate guest host identity; never disable host-key checking globally. *Implemented:* the worker generates the guest host key at disk creation and keeps its public half; `connect` pins it in a `known_hosts` file of its own under the environment ID and uses strict checking.
 - Browser terminal streaming is not part of the first MVP.
 
 ### Sessions
@@ -34,7 +34,7 @@ Clients control environments through the API and reach the guest terminal and ap
 A session records environment, name, kind, process state, and terminal attachment information. The native agent CLI runs in the guest as an ordinary process.
 
 - tmux supplies persistent interactive terminals. systemd supervision can support managed background processes.
-- A disconnected terminal can reattach while the guest remains running.
+- A disconnected terminal can reattach while the guest remains running. *Implemented:* `connect NAME [--session S]` runs `tmux new-session -A -s S` (default `main`); session records are not built yet.
 - After reboot, conversation recovery depends on the agent's own saved state; Boxface must not automatically replay a potentially destructive task.
 
 ### Session State
@@ -53,7 +53,7 @@ Do not inject model secrets into a shared tmux server environment. A session lau
 
 ### Runtime / Operations
 
-Initial engineering target: session attachment within 3 seconds on a healthy local/private network, excluding authentication interaction. This is a provisional target, not a guarantee.
+Initial engineering target: session attachment within 3 seconds on a healthy local/private network, excluding authentication interaction. This is a provisional target, not a guarantee. Measured on the droplet from Europe to New York: 1.5 s over both exposures for a running environment, 8.5 s when `connect` starts a stopped one; SSH through `tailscale serve` survived 2-hour idle periods and a network switch.
 
 ### Security & Privacy
 

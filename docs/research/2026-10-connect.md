@@ -73,3 +73,52 @@ Same droplet and client. The current `boxface-api` and `boxface-worker` were ins
 | Audit | Pass: each tunnel recorded as `environment.connect` with the environment ID and the client's tailnet address, taken from `X-Forwarded-For` on the socket |
 
 **Fix found by this run:** on macOS the config directory is `~/Library/Application Support/boxface`. ssh splits `UserKnownHostsFile` on whitespace, so the pinned key was never read and strict checking refused the first connection. `connect` now quotes the path, and the CLI test uses a config path containing a space.
+
+## Acceptance (C7)
+
+**Date:** 2026-10-10. **Result:** A1–A8 pass on the droplet, with one design gap found: a device key registered after an environment is created is not accepted by that environment.
+
+**Plan:** [acceptance scenarios](../plans/2026-10-connect-and-web-ui.md#acceptance-scenarios)
+
+### Setup
+
+The droplet's Boxface state was wiped (services and VMs stopped, `/var/lib/boxface`, the service override, and the `tailscale serve` config removed); Firecracker, Tailscale, and the built image in `/var/tmp` stayed. `deploy/install.sh` from commit `f5bf337` installed both services, then the API was exposed both ways at once:
+
+```ini
+ExecStart=/usr/local/bin/boxface-api serve -tailscale-socket /var/lib/boxface/api/tailscale.sock -tls-listen 143.244.155.78:443 -tls-domain 143-244-155-78.sslip.io
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+`-tls-listen` names the public address, because `tailscaled` already listens on port 443 of the tailnet address for `tailscale serve`. Let's Encrypt issued a certificate for `143-244-155-78.sslip.io` (issuer `YE1`) through TLS-ALPN-01 on the first request, which took 3.2 s. Within minutes, internet scanners were connecting to port 443 without a server name and were refused by `autocert`.
+
+Clients were the macOS build of `boxfacectl` with fresh config directories whose paths contain a space, and headless Chromium for the web UI.
+
+### Results
+
+| ID | Result |
+|---|---|
+| A1 | Pass. `install.sh` printed the setup URL with a code. Over public HTTPS, the web UI registered the staged image (35.7 s, mostly hashing) and made it `main`, added an SSH key, saved defaults (disk 10 GiB), and issued a CLI login code; the only host step was staging the image. The first browser attempt used the setup code and then failed in the test script (a selector clicked the Setup page link instead of the Register button), so the run continued with a code from `boxface-api bootstrap`, the documented fallback |
+| A2 | Pass over public TLS: `login URL --code`, `create travel` (running in 7.5 s), and `connect travel` landed in tmux session `main` as `dev`, with no host lookups or host-key prompts |
+| A3 | Pass over public TLS: the client was killed while `sleep 100000` ran; `connect travel` reattached to the same pane with the process still running (pid 1346) |
+| A4 | Pass: after `stop travel`, `connect travel` started it (`create_network`, `start_vm`, `wait_ready`) and reached the prompt in 8.5 s; the pinned key in `known_hosts` was unchanged and strict checking passed |
+| A5 | Pass: tunnel requests for another owner's environment (`not_found`), with a revoked token (`unauthorized`), for a deleted environment (`environment_deleted`), and for a stopped one (`environment_not_running`) were refused; the count of `environment.connect` audit records stayed at 4, so no tunnel opened |
+| A6 | Pass, with Tailscale running on the host: from the guest, the client Mac's tailnet address, MagicDNS (`100.100.100.100`), the host's tailnet address (where `tailscale serve` listens), the VPC gateway and the host's VPC address, the cloud metadata service (`169.254.169.254`), the host through the guest gateway, and the host's public address were all dropped; `1.1.1.1:443` and `https://deb.debian.org` were reachable |
+| A7 | Pass. Over `tailscale serve`: the Tailscale login was bound from the web UI's Clients page, after which a new browser signed in with no code and `boxfacectl login https://<host>.ts.net` needed no code; A2 and A3 passed again (session `main`, `sleep 200000` survived a killed client). On the TLS listener, a forged `Tailscale-User-Login` was ignored by `POST /v1/login`, `POST /web/login` (both `401`), and `GET /web/session` |
+| A8 | Pass on the TLS listener with a valid session cookie: cross-site and foreign-`Origin` `POST`s, and a cross-site sign-out, returned `403`; the same `POST` from the same origin returned `201`. No CORS headers are sent, so a cross-site page cannot read `GET` responses |
+
+### Measurements
+
+| Measurement | Value |
+|---|---|
+| Install to first connect, fresh host | 7 min 14 s as run, including about 5 minutes lost to the A1 test-script timeout; about 2 min 15 s without it, of which 36 s is image hashing |
+| Connect to prompt, running environment, public TLS | 1.50–1.57 s (5 runs) |
+| Connect to prompt, running environment, `tailscale serve` | 1.53–1.55 s (5 runs) |
+| Connect to a stopped environment, to prompt | 8.5 s |
+| Create with defaults | 7.5 s |
+| First TLS request with ACME issuance | 3.2 s |
+
+Both exposures meet the provisional 3-second attachment target. Tunnel survival across idle periods and a network change is in the C0 and C5 sections above (through `tailscale serve`); idle survival over public TLS was not measured.
+
+### Finding: a new device cannot connect to existing environments
+
+A second client config logged in over Tailscale with no code, generated and registered its own device key, and then `connect travel` failed with `Permission denied (publickey)`: `travel` was seeded with the keys registered when it was created. This follows the plan's scope (updating SSH keys inside existing environments is deferred), but every additional device, such as a tablet next to a laptop, hits it on every environment created before it logged in. The CLI also reports it as "connection lost or refused", which does not point at keys. Copying the first device's key into the second config made the rest of A7 pass. Options are recorded in the plan's open questions.

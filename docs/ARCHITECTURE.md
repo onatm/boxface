@@ -58,7 +58,7 @@ The principles above are agreed requirements. The following implementation choic
 | Docker execution | Rootless daemon using system-installed binaries | Representative Compose workloads and filesystem support | Validated ([Gate A](./research/2026-10-gate-a.md)) |
 | Metadata | SQLite on one host | Transactional operations and recovery behaviour | Proposed |
 | Persistent disk | One ext4 data image per environment initially | Mount layout, backup and crash recovery | Proposed |
-| Access | SSH through the host on a private network | Tablet connectivity and authentication flow | Proposed |
+| Access | SSH through the host on a private network | Tablet connectivity and authentication flow | Decided: OpenSSH through an API-authorised HTTP Upgrade tunnel to guest port 22, with a host key pinned at disk creation; the API is exposed over TLS on a public address or through `tailscale serve`, and logins use one-time codes with Tailscale identity as an optional provider ([connect results](./research/2026-10-connect.md)) |
 | Implementation language | Not selected | Prefer a small native service/CLI stack; choose during implementation | Decided: Go |
 
 ## System Topology

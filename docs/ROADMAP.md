@@ -69,7 +69,8 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Candidate bets:** Authentication, an API-authorised SSH tunnel, named tmux sessions, server defaults and a `main` image, and runtime secret bindings ([Access and Sessions](./designs/access-and-sessions.md), [Credential Broker](./designs/credential-broker.md)).
 - **Success signal:** Tablet disconnects do not terminate running sessions; project work stays remote and recoverable; Claude Code, Codex, OpenCode, and Pi each complete a small real task with a supported authentication mode.
 - **Dependencies:** Durable server lifecycle (complete).
-- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Long-lived tunnels through `tailscale serve` are unproven (plan C0). Provisional target: session attachment within 3 seconds on a healthy private network.
+- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Devices that log in after an environment is created cannot connect to it yet ([open question](./plans/2026-10-connect-and-web-ui.md#open-questions)).
+- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). Remaining: keys for later devices, and the agent tasks in the success signal, which need credential delivery.
 - **Confidence:** Medium.
 - **Owner:** onatm
 - **Advance / completion criteria:** The plan's acceptance scenarios pass on the droplet, and the success signal holds.
@@ -184,6 +185,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now before its plan exists, with the language choice and plan as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
 | 2026-10-09 | Chose Go as the implementation language | Owner decision; the lifecycle plan is the remaining first deliverable | onatm |
 | 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
+| 2026-10-10 | Connect plan C0–C7 done; daily terminal workflow stays in Now for agent credentials and later-device keys | [Connect results](./research/2026-10-connect.md) | onatm |
 
 ## Linked Documents
 
