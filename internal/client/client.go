@@ -15,6 +15,7 @@ import (
 
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 )
 
 type Error struct {
@@ -130,6 +131,16 @@ func (c *Client) Images(ctx context.Context) ([]images.Image, error) {
 	}
 	err := c.do(ctx, http.MethodGet, "/v1/images", nil, nil, &out)
 	return out.Images, err
+}
+
+func (c *Client) SetImageAlias(ctx context.Context, name, imageID string) error {
+	return c.do(ctx, http.MethodPut, "/v1/image-aliases/"+url.PathEscape(name), map[string]string{"image_id": imageID}, nil, nil)
+}
+
+func (c *Client) AddSSHKey(ctx context.Context, name, publicKey string) (sshkeys.Key, error) {
+	var k sshkeys.Key
+	err := c.do(ctx, http.MethodPost, "/v1/ssh-keys", map[string]string{"name": name, "public_key": publicKey}, nil, &k)
+	return k, err
 }
 
 func (c *Client) Create(ctx context.Context, idempotencyKey string, req lifecycle.CreateRequest) (lifecycle.Accepted, error) {

@@ -16,8 +16,14 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 )
+
+var testKeys = map[string]string{
+	"one": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPv/3an15p2WS8pllhCNT8+Ui5iCTCbODBLNGN4kKUba one",
+	"two": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPt5LCJRq9y4c8J1YZeCdDw7TP7B5LlgxGVVvhVUhQuN two",
+}
 
 type noopWorker struct{}
 
@@ -55,6 +61,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		Auth:         authStore,
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, importDir, imagesDir),
+		SSHKeys:      sshkeys.NewStore(db),
 		Capacity:     capacity,
 		PollInterval: 10 * time.Millisecond,
 	}
@@ -75,6 +82,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		var login map[string]string
 		e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code}, http.StatusOK, &login)
 		e.tokens[name] = login["token"]
+		e.do(name, http.MethodPost, "/v1/ssh-keys", map[string]string{"name": "laptop", "public_key": testKeys[name]}, http.StatusCreated, nil)
 	}
 	e.stage("base")
 	var img images.Image
@@ -296,5 +304,61 @@ func TestImageImportAndList(t *testing.T) {
 	e.do("one", http.MethodGet, "/v1/images", nil, http.StatusOK, &list)
 	if len(list.Images) != 2 {
 		t.Fatalf("images = %+v", list.Images)
+	}
+}
+
+func TestConfigurationRoutes(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	if code := e.errorCode("one", http.MethodPost, "/v1/environments", map[string]string{"name": "travel"}, http.StatusNotFound); code != "not_found" {
+		t.Fatalf("create before main exists: code = %s", code)
+	}
+	e.errorCode("one", http.MethodPut, "/v1/image-aliases/main", map[string]string{"image_id": "missing"}, http.StatusNotFound)
+	e.errorCode("one", http.MethodPut, "/v1/image-aliases/Main", map[string]string{"image_id": e.imageID}, http.StatusBadRequest)
+	e.do("one", http.MethodPut, "/v1/image-aliases/main", map[string]string{"image_id": e.imageID}, http.StatusOK, nil)
+	var list struct {
+		Images []images.Image `json:"images"`
+	}
+	e.do("one", http.MethodGet, "/v1/images", nil, http.StatusOK, &list)
+	if len(list.Images) != 1 || len(list.Images[0].Aliases) != 1 || list.Images[0].Aliases[0] != "main" {
+		t.Fatalf("images = %+v", list.Images)
+	}
+
+	var d lifecycle.Defaults
+	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
+	if d.Image != "main" || d.VCPUs != 2 {
+		t.Fatalf("built-in defaults = %+v", d)
+	}
+	e.errorCode("one", http.MethodPut, "/v1/defaults", map[string]any{"image": "main", "vcpus": 0, "memory_mib": 512, "disk_gib": 4}, http.StatusBadRequest)
+	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
+
+	var acc lifecycle.Accepted
+	e.do("one", http.MethodPost, "/v1/environments", map[string]string{"name": "travel"}, http.StatusAccepted, &acc)
+	e.runner.Wait()
+	var got lifecycle.Environment
+	e.do("one", http.MethodGet, "/v1/environments/"+acc.EnvironmentID, nil, http.StatusOK, &got)
+	if got.ImageID != e.imageID || got.VCPUs != 1 || got.MemoryMiB != 512 {
+		t.Fatalf("environment = %+v", got)
+	}
+}
+
+func TestSSHKeyRoutes(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	var keys struct {
+		SSHKeys []sshkeys.Key `json:"ssh_keys"`
+	}
+	e.do("one", http.MethodGet, "/v1/ssh-keys", nil, http.StatusOK, &keys)
+	if len(keys.SSHKeys) != 1 || keys.SSHKeys[0].Name != "laptop" || strings.Contains(keys.SSHKeys[0].PublicKey, " one") {
+		t.Fatalf("keys = %+v", keys.SSHKeys)
+	}
+	var again sshkeys.Key
+	e.do("one", http.MethodPost, "/v1/ssh-keys", map[string]string{"name": "other", "public_key": testKeys["one"]}, http.StatusOK, &again)
+	if again.ID != keys.SSHKeys[0].ID {
+		t.Fatalf("re-adding returned %+v", again)
+	}
+	e.errorCode("one", http.MethodPost, "/v1/ssh-keys", map[string]string{"name": "x", "public_key": `command="sh" ` + testKeys["one"]}, http.StatusBadRequest)
+	e.errorCode("two", http.MethodDelete, "/v1/ssh-keys/"+again.ID, nil, http.StatusNotFound)
+	e.do("one", http.MethodDelete, "/v1/ssh-keys/"+again.ID, nil, http.StatusNoContent, nil)
+	if code := e.errorCode("one", http.MethodPost, "/v1/environments", e.createRequest("travel"), http.StatusBadRequest); code != "invalid_request" {
+		t.Fatalf("create without keys: code = %s", code)
 	}
 }

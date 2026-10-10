@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 	"github.com/onatm/boxface/internal/version"
 	"github.com/onatm/boxface/internal/worker"
@@ -82,6 +83,7 @@ func serve(args []string) error {
 		Auth:         auth.New(db),
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, *importDir, *imagesDir),
+		SSHKeys:      sshkeys.NewStore(db),
 		Capacity:     capacity,
 		PollInterval: 500 * time.Millisecond,
 	}

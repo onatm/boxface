@@ -34,8 +34,11 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | `POST /v1/profiles` | Validate/store user-profile revision |
 | `POST /v1/images/build` | Create asynchronous image-build operation |
 | `POST /v1/images` | Register an artifact set staged in the import directory, `{"source": "<name>"}`; `201` when new, `200` with the existing image when the content digest matches. *Implemented* |
-| `GET /v1/images` | List ready/failed image revisions. *Implemented* |
-| `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name`, `image_id`, `vcpus`, `memory_mib`, `disk_gib` |
+| `GET /v1/images` | List ready/failed image revisions with their aliases. *Implemented* |
+| `PUT /v1/image-aliases/{name}` | Point an alias such as `main` at an image, `{"image_id": "..."}`; existing environments keep their image. *Implemented* |
+| `GET /v1/defaults`, `PUT /v1/defaults` | The owner's create defaults: `image` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`. Without saved defaults: `main`, 2, 2048, 20. *Implemented* |
+| `GET /v1/ssh-keys`, `POST /v1/ssh-keys`, `DELETE /v1/ssh-keys/{id}` | The owner's SSH public keys, `{"name", "public_key"}`; one key line without options; `201` when new, `200` with the existing key when the fingerprint matches. *Implemented* |
+| `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name` and optional `image_id` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`; omitted fields come from the owner's defaults, are resolved once, and the environment records the concrete values. The owner's SSH keys at submission are seeded into the new disk; a create with no registered key is rejected |
 | `GET /v1/environments` | List authorised environments, including deleted ones whose disk is retained. *Implemented* |
 | `GET /v1/environments/{id}` | Inspect revision, state, resources, operations. *Implemented* |
 | `POST /v1/environments/{id}/start` | Start retained environment. *Implemented* |
@@ -78,7 +81,9 @@ Use SQLite transactions for local metadata.
 
 | Record | Essential fields |
 | --- | --- |
-| Owner | ID, authentication records, permitted bindings |
+| Owner | ID, authentication records, permitted bindings, create defaults |
+| SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
+| Image alias | Name, image ID; repointing never changes existing environments |
 | Recipe revision | ID, source YAML, canonical spec, parent/name, creation time |
 | Profile revision | ID, tools, pinned dotfiles, package inputs |
 | Image | ID/digest, build key, artifact paths, ready/failed status, compatibility |

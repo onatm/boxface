@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -27,10 +28,10 @@ import (
 const usage = `usage: boxfacectl [--json] <command> [arguments]
 
 commands:
-  login --server URL [--code CODE]
-  image import SOURCE
+  login URL [--code CODE]
+  image import SOURCE [--alias NAME]
   image list
-  create NAME --image ID [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
+  create NAME [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
   list
   inspect NAME
   start NAME [--no-wait]
@@ -132,8 +133,8 @@ func (c *cli) dispatch(ctx context.Context, command string, args []string) error
 		if len(args) == 1 && args[0] == "list" {
 			return c.imageList(ctx)
 		}
-		if len(args) == 2 && args[0] == "import" {
-			return c.imageImport(ctx, args[1])
+		if len(args) > 0 && args[0] == "import" {
+			return c.imageImport(ctx, args[1:])
 		}
 		return errUsage
 	case "create":
@@ -216,8 +217,12 @@ func (c *cli) login(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	server := fs.String("server", "", "Boxface API URL")
 	code := fs.String("code", "", "one-time login code from boxface-api bootstrap")
-	if rest, err := parse(fs, args); err != nil || len(rest) != 0 {
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) > 1 || (len(rest) == 1 && *server != "") {
 		return errUsage
+	}
+	if len(rest) == 1 {
+		*server = rest[0]
 	}
 	if *server == "" {
 		cfg, err := c.loadConfig()
@@ -244,10 +249,48 @@ func (c *cli) login(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.stderr, "logged in to %s\n", *server)
+	if err := c.registerDevice(ctx, client.New(*server, token)); err != nil {
+		return fmt.Errorf("logged in, but could not register this device's SSH key: %w", err)
+	}
 	return nil
 }
 
-func (c *cli) imageImport(ctx context.Context, source string) error {
+func (c *cli) registerDevice(ctx context.Context, api *client.Client) error {
+	path := filepath.Join(filepath.Dir(c.configPath), "id_ed25519")
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "boxfacectl"
+	}
+	if len(host) > 64 {
+		host = host[:64]
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "boxfacectl@"+host, "-f", path).CombinedOutput(); err != nil {
+			return fmt.Errorf("ssh-keygen: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return err
+	}
+	pub, err := os.ReadFile(path + ".pub")
+	if err != nil {
+		return err
+	}
+	k, err := api.AddSSHKey(ctx, host, string(pub))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stderr, "registered SSH key %s as %s\n", k.Fingerprint, k.Name)
+	return nil
+}
+
+func (c *cli) imageImport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("image import", flag.ContinueOnError)
+	alias := fs.String("alias", "", "also point this image alias at the image, such as main")
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) != 1 {
+		return errUsage
+	}
+	source := rest[0]
 	api, err := c.client()
 	if err != nil {
 		return err
@@ -256,6 +299,14 @@ func (c *cli) imageImport(ctx context.Context, source string) error {
 	img, err := api.ImportImage(ctx, source)
 	if err != nil {
 		return err
+	}
+	if *alias != "" {
+		if err := api.SetImageAlias(ctx, *alias, img.ID); err != nil {
+			return err
+		}
+		if !slices.Contains(img.Aliases, *alias) {
+			img.Aliases = append(img.Aliases, *alias)
+		}
 	}
 	c.output(img, func(w io.Writer) { fmt.Fprintf(w, "%s  %s\n", img.ID, img.Digest) })
 	return nil
@@ -272,9 +323,9 @@ func (c *cli) imageList(ctx context.Context) error {
 	}
 	c.output(list, func(w io.Writer) {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tSTATUS\tDIGEST\tCREATED")
+		fmt.Fprintln(tw, "ID\tALIASES\tSTATUS\tDIGEST\tCREATED")
 		for _, img := range list {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", img.ID, img.Status, img.Digest, img.CreatedAt)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", img.ID, strings.Join(img.Aliases, ","), img.Status, img.Digest, img.CreatedAt)
 		}
 		tw.Flush()
 	})
@@ -284,13 +335,13 @@ func (c *cli) imageList(ctx context.Context) error {
 func (c *cli) create(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	req := lifecycle.CreateRequest{}
-	fs.StringVar(&req.ImageID, "image", "", "image ID")
-	fs.IntVar(&req.VCPUs, "vcpus", 2, "vCPUs")
-	fs.IntVar(&req.MemoryMiB, "memory-mib", 2048, "guest memory in MiB")
-	fs.IntVar(&req.DiskGiB, "disk-gib", 20, "data disk size in GiB")
+	fs.StringVar(&req.ImageID, "image", "", "image ID or alias; the server default when omitted")
+	fs.IntVar(&req.VCPUs, "vcpus", 0, "vCPUs; the server default when omitted")
+	fs.IntVar(&req.MemoryMiB, "memory-mib", 0, "guest memory in MiB; the server default when omitted")
+	fs.IntVar(&req.DiskGiB, "disk-gib", 0, "data disk size in GiB; the server default when omitted")
 	noWait := fs.Bool("no-wait", false, "return once the operation is accepted")
 	rest, err := parse(fs, args)
-	if err != nil || len(rest) != 1 || req.ImageID == "" {
+	if err != nil || len(rest) != 1 {
 		return errUsage
 	}
 	req.Name = rest[0]

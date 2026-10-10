@@ -46,9 +46,12 @@ boxfacectl delete experiment --purge-data
 
 ### Implemented Subset
 
-The [lifecycle plan](../plans/2026-10-durable-lifecycle.md) implements `login`, `image import`, `image list`, `create`, `list`, `inspect`, `start`, `stop`, `delete`, and `operation`. The rest of the commands above remain proposed.
+The [lifecycle plan](../plans/2026-10-durable-lifecycle.md) implements `login`, `image import`, `image list`, `create`, `list`, `inspect`, `start`, `stop`, `delete`, and `operation`. The [connect plan](../plans/2026-10-connect-and-web-ui.md) narrows the daily path to `login URL`, `create NAME`, and `connect NAME`. The rest of the commands above remain proposed.
 
-- `login --server URL [--code CODE]` exchanges a one-time code from `boxface-api bootstrap` for a token. It prompts for the code when stdin is a terminal. One server is stored, with its token, in `$BOXFACE_CONFIG` or the user config directory (`boxface/config.json`, mode 0600); `server add` and named servers are deferred.
+- `login URL [--code CODE]` (or `--server URL`) exchanges a one-time code from `boxface-api bootstrap` for a token. It prompts for the code when stdin is a terminal. One server is stored, with its token, in `$BOXFACE_CONFIG` or the user config directory (`boxface/config.json`, mode 0600); `server add` and named servers are deferred.
+- `login` creates a device SSH key, `id_ed25519` beside the config file, with `ssh-keygen` if it does not exist, and registers its public key under the device's host name. Registering an existing key again is harmless.
+- `create NAME` needs no flags: `--image` (ID or alias), `--vcpus`, `--memory-mib`, and `--disk-gib` override the server defaults.
+- `image import SOURCE --alias NAME` also points the alias at the imported image; `image list` shows aliases.
 - `create`, `start`, `stop`, and `delete` follow the operation and print each completed step, then the environment; `--no-wait` returns once the operation is accepted. Each invocation sends a fresh idempotency key and reuses it when retrying a request after a network failure.
 - Ctrl-C stops following, leaves the operation running on the server, and prints `boxfacectl operation <id> --follow` to resume. The event stream reconnects with `Last-Event-ID` after a dropped connection.
 - Environments are named by name or ID. A name matches the live environment first, then a deleted one whose disk is retained, so `delete NAME --purge-data` can purge it.
@@ -58,7 +61,7 @@ The [lifecycle plan](../plans/2026-10-durable-lifecycle.md) implements `login`, 
 ### Behavior Rules
 
 - `create quick` requires configured server defaults. A new environment resolves defaults once and records exact revisions.
-- `connect` to a stopped environment reports its state; an explicit `--start` option can start and wait. Avoid silent image upgrades on connect.
+- `connect` to a stopped environment starts it, shows progress, then connects. Starting never changes the image, so connect never upgrades silently.
 - `exec` transports an argument array, working directory, and explicit environment bindings. It does not concatenate untrusted strings into a host shell command. Interactive shell execution is a distinct operation.
 - `forward` binds client loopback by default; see [Access and Sessions](./access-and-sessions.md#port-forwarding).
 

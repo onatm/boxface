@@ -25,6 +25,7 @@ The host worker performs the narrow set of privileged host operations Boxface ne
 
 - The worker runs as root as `boxface-worker` and holds no database. Its systemd unit is `Type=notify`: it reports ready only once its socket is listening, so the API, ordered after it, can reconcile at startup. It accepts validated identifiers and structured specifications from the API as JSON over HTTP on a Unix socket readable only by the `boxface` group, and checks the caller's UID with `SO_PEERCRED`.
 - Every call creates or removes one resource idempotently: repeating a call that already took effect changes nothing.
+- A disk is seeded with the SSH public keys passed in its specification, one validated line each; the worker reads no key file from the host.
 - It never runs shell strings supplied by clients; `exec` arguments travel as an argument array (see [boxfacectl](./cli.md)).
 - The hypervisor runtime sits behind a narrow interface. Firecracker is the first candidate; Cloud Hypervisor is the fallback. Implement one backend first.
 
@@ -61,7 +62,7 @@ The guest's readiness report retries until it is delivered, and the worker liste
 ### Networking
 
 - Each environment gets a `/30` from a configured pool (default `172.20.0.0/16`) and its own tap device, `bfx` plus the start of the environment ID. Removing the network releases the address; the next start may allocate a different one. The guest address is passed on the kernel command line (`ip=`) and applied by `systemd-network-generator`, so one image serves every environment.
-- nftables allow guest traffic to the internet and drop guest traffic to the host and to other guests.
+- nftables allow guest traffic to the internet and drop guest traffic to the host, to other guests, and to private, link-local, and Tailscale ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, `169.254.0.0/16`, `fd7a:115c:a1e0::/48`), so a guest never reaches the LAN or the tailnet through the host.
 - Deny management-plane and other-guest access by default. Allow required outbound development traffic under a configurable policy.
 
 ### Data Model / State

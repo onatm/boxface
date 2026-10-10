@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ type fakeWorker struct {
 	mu      sync.Mutex
 	calls   []string
 	disks   map[string]bool
+	keys    map[string][]string
 	vms     map[string]bool
 	block   map[string]chan struct{}
 	entered chan string
@@ -34,7 +36,7 @@ type fakeWorker struct {
 }
 
 func newFakeWorker() *fakeWorker {
-	return &fakeWorker{disks: map[string]bool{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
+	return &fakeWorker{disks: map[string]bool{}, keys: map[string][]string{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
 }
 
 func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error {
@@ -67,7 +69,7 @@ func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error 
 }
 
 func (f *fakeWorker) CreateDisk(ctx context.Context, spec DiskSpec) error {
-	return f.call(ctx, "CreateDisk", func() { f.disks[spec.DiskID] = true })
+	return f.call(ctx, "CreateDisk", func() { f.disks[spec.DiskID] = true; f.keys[spec.DiskID] = spec.AuthorizedKeys })
 }
 func (f *fakeWorker) RemoveDisk(ctx context.Context, diskID string) error {
 	return f.call(ctx, "RemoveDisk", func() { delete(f.disks, diskID) })
@@ -110,6 +112,9 @@ func openDB(t *testing.T) *sql.DB {
 	for _, q := range []string{
 		`INSERT INTO owners (id, name, created_at) VALUES ('owner-1', 'one', '2026-10-09T00:00:00Z'), ('owner-2', 'two', '2026-10-09T00:00:00Z')`,
 		`INSERT INTO images (id, digest, status, created_at) VALUES ('image-1', 'sha256:test', 'ready', '2026-10-09T00:00:00Z')`,
+		`INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at) VALUES
+			('key-1', 'owner-1', 'laptop', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPv/3an15p2WS8pllhCNT8+Ui5iCTCbODBLNGN4kKUba', 'fp-1', '2026-10-09T00:00:00Z'),
+			('key-2', 'owner-2', 'laptop', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPt5LCJRq9y4c8J1YZeCdDw7TP7B5LlgxGVVvhVUhQuN', 'fp-2', '2026-10-09T00:00:00Z')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -509,9 +514,9 @@ func TestCreateValidation(t *testing.T) {
 		req  CreateRequest
 		want error
 	}{
-		"bad name":      {CreateRequest{Name: "Travel", ImageID: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
-		"no vcpus":      {CreateRequest{Name: "travel", ImageID: image, VCPUs: 0, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
-		"unknown image": {CreateRequest{Name: "travel", ImageID: "missing", VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrNotFound},
+		"bad name":       {CreateRequest{Name: "Travel", ImageID: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
+		"negative vcpus": {CreateRequest{Name: "travel", ImageID: image, VCPUs: -1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
+		"unknown image":  {CreateRequest{Name: "travel", ImageID: "missing", VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrNotFound},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -576,5 +581,104 @@ func TestRetainedDiskCanBePurgedAfterDelete(t *testing.T) {
 	}
 	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, true); !errors.Is(err, ErrEnvironmentDeleted) {
 		t.Fatalf("purge twice: err = %v", err)
+	}
+}
+
+func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "first"}); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), `"main"`) {
+		t.Fatalf("create without a main image: err = %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO images (id, digest, status, created_at) VALUES ('image-2', 'sha256:two', 'ready', '2026-10-09T00:00:00Z')`,
+		`INSERT INTO image_aliases (name, image_id, updated_at) VALUES ('main', 'image-1', '2026-10-09T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := s.Create(ctx, owner, "first-key", CreateRequest{Name: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	env := mustEnvironment(t, s, first.EnvironmentID)
+	if env.ImageID != image || env.VCPUs != 2 || env.MemoryMiB != 2048 || env.ObservedState != "running" {
+		t.Fatalf("environment from built-in defaults = %+v", env)
+	}
+	if keys := w.keys[env.DiskID]; len(keys) != 1 || !strings.HasPrefix(keys[0], "ssh-ed25519 ") {
+		t.Fatalf("disk keys = %q", keys)
+	}
+
+	if _, err := db.Exec(`UPDATE image_aliases SET image_id = 'image-2' WHERE name = 'main'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.Create(ctx, owner, "first-key", CreateRequest{Name: "first"})
+	if err != nil || retry != first {
+		t.Fatalf("retry after defaults changed = %+v, %v; want %+v", retry, err, first)
+	}
+	second, err := s.Create(ctx, owner, "", CreateRequest{Name: "second", MemoryMiB: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, second.EnvironmentID); env.ImageID != "image-2" || env.VCPUs != 1 || env.MemoryMiB != 1024 {
+		t.Fatalf("environment from saved defaults = %+v", env)
+	}
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.ImageID != image {
+		t.Fatalf("moving main changed an existing environment: %+v", env)
+	}
+	if d, err := s.Defaults(ctx, otherOwner); err != nil || d != builtinDefaults {
+		t.Fatalf("other owner's defaults = %+v, %v", d, err)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("defaults without image: err = %v", err)
+	}
+}
+
+func TestCreateWithoutSSHKeysRejected(t *testing.T) {
+	db := openDB(t)
+	s, _, _ := newService(t, db, newFakeWorker())
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(context.Background(), owner, "", travel); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "boxfacectl login") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := count(t, db, `SELECT count(*) FROM environments`); n != 0 {
+		t.Fatalf("environments = %d after rejected create", n)
+	}
+}
+
+func TestResumedCreateSeedsKeysRecordedAtSubmit(t *testing.T) {
+	db := openDB(t)
+	first := newFakeWorker()
+	first.block["CreateDisk"] = make(chan struct{})
+	s1, r1, stopFirst := newService(t, db, first)
+	acc, err := s1.Create(context.Background(), owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-first.entered
+	stopFirst()
+	r1.Wait()
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	second := newFakeWorker()
+	s2, r2, _ := newService(t, db, second)
+	r2.Kick()
+	r2.Wait()
+	env := mustEnvironment(t, s2, acc.EnvironmentID)
+	if env.ObservedState != "running" || len(second.keys[env.DiskID]) != 1 {
+		t.Fatalf("environment %+v, disk keys %q", env, second.keys[env.DiskID])
 	}
 }

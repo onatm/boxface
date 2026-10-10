@@ -11,10 +11,8 @@ id boxface > /dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sb
 id boxface-vm > /dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin boxface-vm
 
 install -d -o root -g root -m 0755 /var/lib/boxface
-[ -d /etc/boxface ] || install -d -o root -g root -m 0700 /etc/boxface
 install -d -o boxface -g boxface -m 0700 /var/lib/boxface/api
 install -d -o boxface -g boxface -m 0755 /var/lib/boxface/import /var/lib/boxface/images
-[ -f /etc/boxface/authorized_keys ] || { echo "write the owner's SSH public keys to /etc/boxface/authorized_keys" >&2; exit 1; }
 
 install -m 0755 "$bin/boxface-api" "$bin/boxface-worker" /usr/local/bin/
 install -m 0644 "$here/boxface-worker.service" "$here/boxface-api.service" /etc/systemd/system/

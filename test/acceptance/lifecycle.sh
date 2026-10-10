@@ -3,12 +3,6 @@ set -uo pipefail
 
 source "$(dirname "$0")/lib.sh"
 
-keydir="$(mktemp -d)"
-ssh-keygen -q -t ed25519 -N '' -f "$keydir/key"
-cp -p /etc/boxface/authorized_keys "$keydir/authorized_keys.orig"
-cat "$keydir/key.pub" >> /etc/boxface/authorized_keys
-trap 'cp -p "$keydir/authorized_keys.orig" /etc/boxface/authorized_keys; rm -rf "$keydir"' EXIT
-
 now() { date +%s.%N; }
 since() { echo "$(now) - $1" | bc; }
 count_disks() { ls "$state/disks" | wc -l; }
@@ -109,6 +103,19 @@ check "guest cannot reach the API port" dropped "$g1" "$(guest_ip "$g1" | python
 check "guest cannot reach the host's public address" dropped "$g1" "$host_public" 22
 check "guest cannot reach another guest" dropped "$g1" "$(guest_ip "$g2")" 22
 check "the other guest is up" guest_ssh "$g2" true
+ns="bft-$run"
+ip netns add "$ns"
+ip link add bft0 type veth peer name bft1 netns "$ns"
+ip addr add 10.255.0.1/24 dev bft0 && ip addr add 100.127.0.1/24 dev bft0 && ip link set bft0 up
+ip -n "$ns" addr add 10.255.0.2/24 dev bft1 && ip -n "$ns" addr add 100.127.0.2/24 dev bft1
+ip -n "$ns" link set bft1 up && ip -n "$ns" link set lo up
+ip netns exec "$ns" python3 -m http.server --bind 0.0.0.0 8080 > /dev/null 2>&1 &
+lan_server=$!
+sleep 1
+check "the LAN stand-in answers the host" curl -fsS -m 5 -o /dev/null http://10.255.0.2:8080/
+check "guest cannot reach a LAN address" dropped "$g1" 10.255.0.2 8080
+check "guest cannot reach a tailnet address" dropped "$g1" 100.127.0.2 8080
+kill "$lan_server"; ip link del bft0; ip netns del "$ns"
 
 echo "== S2: audit records"
 audit() {

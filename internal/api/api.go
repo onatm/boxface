@@ -15,6 +15,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
 )
 
@@ -24,6 +25,7 @@ type Server struct {
 	Auth         *auth.Store
 	Lifecycle    *lifecycle.Service
 	Images       *images.Registry
+	SSHKeys      *sshkeys.Store
 	Capacity     lifecycle.Capacity
 	PollInterval time.Duration
 }
@@ -46,6 +48,12 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/capabilities", s.capabilities)
 	authed("POST /v1/images", s.importImage)
 	authed("GET /v1/images", s.listImages)
+	authed("PUT /v1/image-aliases/{name}", s.setImageAlias)
+	authed("GET /v1/defaults", s.getDefaults)
+	authed("PUT /v1/defaults", s.setDefaults)
+	authed("GET /v1/ssh-keys", s.listSSHKeys)
+	authed("POST /v1/ssh-keys", s.addSSHKey)
+	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
 	authed("POST /v1/environments", s.createEnvironment)
 	authed("GET /v1/environments", s.listEnvironments)
 	authed("GET /v1/environments/{id}", s.getEnvironment)
@@ -141,6 +149,81 @@ func (s *Server) listImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"images": list})
+}
+
+func (s *Server) setImageAlias(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ImageID string `json:"image_id"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.Images.SetAlias(r.Context(), r.PathValue("name"), req.ImageID); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": r.PathValue("name"), "image_id": req.ImageID})
+}
+
+func (s *Server) getDefaults(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (s *Server) setDefaults(w http.ResponseWriter, r *http.Request) {
+	var d lifecycle.Defaults
+	if err := decode(w, r, &d); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.Lifecycle.SetDefaults(r.Context(), owner(r), d); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (s *Server) listSSHKeys(w http.ResponseWriter, r *http.Request) {
+	list, err := s.SSHKeys.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ssh_keys": list})
+}
+
+func (s *Server) addSSHKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string `json:"name"`
+		PublicKey string `json:"public_key"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	k, created, err := s.SSHKeys.Add(r.Context(), owner(r), req.Name, req.PublicKey)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, k)
+}
+
+func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
+	if err := s.SSHKeys.Delete(r.Context(), owner(r), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -280,7 +363,11 @@ func writeError(w http.ResponseWriter, err error) {
 		{auth.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
 		{lifecycle.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidSource, http.StatusBadRequest, "invalid_request"},
+		{images.ErrInvalidAlias, http.StatusBadRequest, "invalid_request"},
+		{sshkeys.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{lifecycle.ErrNotFound, http.StatusNotFound, "not_found"},
+		{images.ErrNotFound, http.StatusNotFound, "not_found"},
+		{sshkeys.ErrNotFound, http.StatusNotFound, "not_found"},
 		{lifecycle.ErrNameTaken, http.StatusConflict, "name_taken"},
 		{lifecycle.ErrEnvironmentDeleted, http.StatusConflict, "environment_deleted"},
 		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},

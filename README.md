@@ -10,7 +10,7 @@ Early and single-owner. What works today:
 
 - `boxface-api` and `boxface-worker` run on one KVM host as systemd services.
 - Environments can be created, listed, inspected, started, stopped, deleted, and purged through the API or `boxfacectl`, and survive API, worker, and host restarts ([acceptance results](docs/research/2026-10-lifecycle.md)).
-- Guests reach the internet, but not the host, the API, or each other.
+- Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet.
 
 Not yet built: an SSH gateway and session management, connection discovery, credential delivery to sessions, image builds through the API, backups, upgrades, and a web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
 
@@ -65,14 +65,7 @@ The result is `/var/tmp/boxface-gate-c/out/vmlinux` and `/var/tmp/boxface-gate-c
 
 Run these as root on the host.
 
-1. Put the SSH public keys that should be able to log in to new environments in `/etc/boxface/authorized_keys`:
-
-   ```sh
-   install -d -m 0700 /etc/boxface
-   install -m 0600 ~/.ssh/authorized_keys /etc/boxface/authorized_keys   # or your own key file
-   ```
-
-2. Copy the repository and `bin/linux-amd64/` to the host, then install and start the services from the binaries directory:
+1. Copy the repository and `bin/linux-amd64/` to the host, then install and start the services from the binaries directory:
 
    ```sh
    deploy/install.sh bin/linux-amd64
@@ -80,13 +73,13 @@ Run these as root on the host.
 
    This creates the `boxface` and `boxface-vm` system users and `/var/lib/boxface`. It then installs both services, enables them and starts them. The API listens on `127.0.0.1:7443`.
 
-3. Create a one-time login code, valid for 15 minutes:
+2. Create a one-time login code, valid for 15 minutes:
 
    ```sh
    runuser -u boxface -- boxface-api bootstrap -owner <your-name>
    ```
 
-4. Register the image. Move it into the import directory, then register it from the client, as shown in the next section:
+3. Register the image. Move it into the import directory, then register it from the client, as shown in the next section:
 
    ```sh
    mkdir /var/lib/boxface/import/base
@@ -105,15 +98,18 @@ ssh -f -N -L 7443:127.0.0.1:7443 root@<host>
 Log in with the code from step 3, and register the image staged in step 4:
 
 ```sh
-boxfacectl login --server http://127.0.0.1:7443          # prompts for the code
-boxfacectl image import base                              # hashes and registers it; prints the image ID
+boxfacectl login http://127.0.0.1:7443                   # prompts for the code
+boxfacectl image import base --alias main                 # hashes and registers it as the default image
 boxfacectl image list
 ```
+
+`login` also creates an SSH key for this device (`id_ed25519` next to the login file) and registers its public key with the server. New environments accept the keys registered when they are created.
 
 Manage environments:
 
 ```sh
-boxfacectl create travel --image <image-id> --vcpus 2 --memory-mib 2048 --disk-gib 20
+boxfacectl create travel                  # main image, 2 vCPUs, 2048 MiB, 20 GiB disk
+boxfacectl create big --vcpus 4 --memory-mib 8192 --image <image-id-or-alias>
 boxfacectl list
 boxfacectl inspect travel
 boxfacectl stop travel
@@ -143,10 +139,10 @@ Connection discovery isn't built yet. Each environment gets its own `/30` networ
 ip -4 -br addr show dev bfx<first 12 hex digits of the ID>   # e.g. 172.20.0.1/30, so the guest is 172.20.0.2
 ```
 
-Then connect as `dev`, through the host:
+Then connect as `dev`, through the host, with the device key `login` created (on macOS it is in `~/Library/Application Support/boxface/`):
 
 ```sh
-ssh -J root@<host> dev@172.20.0.2
+ssh -i ~/.config/boxface/id_ed25519 -J root@<host> dev@172.20.0.2
 ```
 
 Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp` and `/run` are in memory. The root filesystem is read-only, there is no sudo, and Docker runs rootless as `dev`.

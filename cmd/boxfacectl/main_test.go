@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 )
 
@@ -71,6 +72,7 @@ func newHarness(t *testing.T) *harness {
 		Auth:         authStore,
 		Lifecycle:    lifecycle.NewService(db, runner, lifecycle.Capacity{}),
 		Images:       images.NewRegistry(db, importDir, filepath.Join(dir, "images")),
+		SSHKeys:      sshkeys.NewStore(db),
 		PollInterval: 10 * time.Millisecond,
 	}
 	srv := httptest.NewServer(s.Handler())
@@ -191,7 +193,7 @@ func TestInterruptedFollowLeavesOperationRunning(t *testing.T) {
 
 func TestUsageAndLoginErrors(t *testing.T) {
 	h := newHarness(t)
-	for _, args := range [][]string{{}, {"bogus"}, {"create"}, {"create", "x"}, {"image", "import"}} {
+	for _, args := range [][]string{{}, {"bogus"}, {"create"}, {"create", "x", "y"}, {"image", "import"}, {"login", "a", "b"}} {
 		if code, _, _ := h.run(context.Background(), "", false, args...); code != exitUsage {
 			t.Fatalf("%v: exit %d, want usage", args, code)
 		}
@@ -204,5 +206,35 @@ func TestUsageAndLoginErrors(t *testing.T) {
 	}
 	if code, _, _ := h.run(context.Background(), h.code+"\n", true, "login", "--server", h.server); code != exitOK {
 		t.Fatalf("interactive login: exit %d", code)
+	}
+}
+
+func TestLoginRegistersDeviceKeyAndCreateUsesDefaults(t *testing.T) {
+	h := newHarness(t)
+	code, _, errOut := h.run(context.Background(), "", false, "login", h.server, "--code", h.code)
+	if code != exitOK || !strings.Contains(errOut, "registered SSH key SHA256:") {
+		t.Fatalf("login: exit %d, %s", code, errOut)
+	}
+	keyPath := filepath.Join(filepath.Dir(h.config), "id_ed25519")
+	if info, err := os.Stat(keyPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("device key = %v, %v", info, err)
+	}
+	if code, _, errOut := h.run(context.Background(), "", false, "login", h.server, "--code", h.code); code != exitError || !strings.Contains(errOut, "unauthorized") {
+		t.Fatalf("reused code: exit %d, %s", code, errOut)
+	}
+
+	os.MkdirAll(filepath.Join(h.importDir, "base"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "base", "vmlinux"), []byte("kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "base", "rootfs.ext4"), []byte("rootfs"), 0o644)
+	h.ok("image", "import", "base", "--alias", "main")
+	if out := h.ok("image", "list"); !strings.Contains(out, "main") {
+		t.Fatalf("image list = %s", out)
+	}
+	var created lifecycle.Environment
+	if err := json.Unmarshal([]byte(h.ok("--json", "create", "travel")), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ObservedState != "running" || created.VCPUs != 2 || created.MemoryMiB != 2048 {
+		t.Fatalf("created = %+v", created)
 	}
 }

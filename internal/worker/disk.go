@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/onatm/boxface/internal/lifecycle"
 )
@@ -17,15 +18,19 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 	if spec.SizeGiB < 1 {
 		return fmt.Errorf("disk size %d GiB is too small", spec.SizeGiB)
 	}
+	if len(spec.AuthorizedKeys) == 0 {
+		return errors.New("no authorized keys to seed")
+	}
+	for _, k := range spec.AuthorizedKeys {
+		if k == "" || strings.ContainsAny(k, "\r\n") {
+			return errors.New("authorized key must be a single non-empty line")
+		}
+	}
 	path := h.diskPath(spec.DiskID)
 	if ok, err := exists(path); err != nil || ok {
 		return err
 	}
 
-	keys, err := os.ReadFile(h.cfg.AuthorizedKeysFile)
-	if err != nil {
-		return fmt.Errorf("read authorized keys: %w", err)
-	}
 	seed, err := os.MkdirTemp("", "boxface-seed-")
 	if err != nil {
 		return err
@@ -35,7 +40,7 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), keys, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(strings.Join(spec.AuthorizedKeys, "\n")+"\n"), 0o600); err != nil {
 		return err
 	}
 	for _, p := range []string{filepath.Join(seed, "home"), sshDir, filepath.Join(sshDir, "authorized_keys")} {

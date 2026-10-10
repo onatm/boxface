@@ -20,14 +20,13 @@ import (
 const guestUID = 1000
 
 type Config struct {
-	StateDir           string
-	ImagesDir          string
-	Firecracker        string
-	VMUser             string
-	Pool               netip.Prefix
-	AuthorizedKeysFile string
-	ReadyTimeout       time.Duration
-	StopTimeout        time.Duration
+	StateDir     string
+	ImagesDir    string
+	Firecracker  string
+	VMUser       string
+	Pool         netip.Prefix
+	ReadyTimeout time.Duration
+	StopTimeout  time.Duration
 }
 
 type Host struct {

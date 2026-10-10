@@ -116,11 +116,16 @@ func TestFirewallRuleset(t *testing.T) {
 		`iifname "bfx*" ct state established,related accept`,
 		`iifname "bfx*" drop`,
 		`iifname "bfx*" oifname "bfx*" drop`,
+		`iifname "bfx*" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop`,
+		`iifname "bfx*" ip6 daddr fd7a:115c:a1e0::/48 drop`,
 		`ip saddr 172.20.0.0/16 oifname != "bfx*" masquerade`,
 	} {
 		if !strings.Contains(rules, want) {
 			t.Fatalf("ruleset missing %q:\n%s", want, rules)
 		}
+	}
+	if strings.Index(rules, "100.64.0.0/10") > strings.Index(rules, `iifname "bfx*" accept`) {
+		t.Fatalf("private and tailnet drops must precede the guest accept:\n%s", rules)
 	}
 }
 
@@ -247,5 +252,21 @@ func TestConsoleSummary(t *testing.T) {
 	}
 	if got := consoleSummary("a\nb\nc\nd\ne\nf"); got != "b | c | d | e | f" {
 		t.Fatalf("summary = %q", got)
+	}
+}
+
+func TestCreateDiskRejectsMissingOrMultilineKeys(t *testing.T) {
+	h := testHost(t)
+	for name, keys := range map[string][]string{
+		"none":      nil,
+		"empty":     {""},
+		"multiline": {"ssh-ed25519 AAAA\nssh-ed25519 BBBB"},
+	} {
+		if err := h.CreateDisk(context.Background(), lifecycle.DiskSpec{DiskID: "disk-a", SizeGiB: 1, AuthorizedKeys: keys}); err == nil {
+			t.Fatalf("%s: CreateDisk accepted %q", name, keys)
+		}
+	}
+	if _, err := os.Stat(h.diskPath("disk-a")); !os.IsNotExist(err) {
+		t.Fatalf("rejected spec left a disk: %v", err)
 	}
 }

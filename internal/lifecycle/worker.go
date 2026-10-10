@@ -3,9 +3,10 @@ package lifecycle
 import "context"
 
 type DiskSpec struct {
-	DiskID        string
-	EnvironmentID string
-	SizeGiB       int
+	DiskID         string
+	EnvironmentID  string
+	SizeGiB        int
+	AuthorizedKeys []string
 }
 
 type VMSpec struct {

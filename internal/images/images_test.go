@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/onatm/boxface/internal/store"
@@ -56,7 +57,7 @@ func TestImportMovesArtifactsAndRecordsDigest(t *testing.T) {
 		t.Fatalf("source left in import dir: %v", err)
 	}
 	list, _ := r.List(context.Background())
-	if len(list) != 1 || list[0] != img {
+	if len(list) != 1 || !reflect.DeepEqual(list[0], img) {
 		t.Fatalf("list = %+v", list)
 	}
 }
@@ -80,6 +81,34 @@ func TestImportRejectsBadSources(t *testing.T) {
 	for _, source := range []string{"../etc", "a/b", "", "missing", "partial"} {
 		if _, _, err := r.Import(context.Background(), source); !errors.Is(err, ErrInvalidSource) {
 			t.Fatalf("import %q: err = %v", source, err)
+		}
+	}
+}
+
+func TestSetAliasMovesBetweenImages(t *testing.T) {
+	r, importDir, _ := newRegistry(t)
+	ctx := context.Background()
+	stage(t, importDir, "one", "kernel", "one")
+	stage(t, importDir, "two", "kernel", "two")
+	one, _, _ := r.Import(ctx, "one")
+	two, _, _ := r.Import(ctx, "two")
+
+	if err := r.SetAlias(ctx, "main", one.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetAlias(ctx, "main", two.ID); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := r.List(ctx)
+	if !reflect.DeepEqual(list[0].Aliases, []string{}) || !reflect.DeepEqual(list[1].Aliases, []string{"main"}) {
+		t.Fatalf("list = %+v", list)
+	}
+	if err := r.SetAlias(ctx, "main", "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown image: err = %v", err)
+	}
+	for _, name := range []string{"Main", "../x", "", "1st"} {
+		if err := r.SetAlias(ctx, name, one.ID); !errors.Is(err, ErrInvalidAlias) {
+			t.Fatalf("alias %q: err = %v", name, err)
 		}
 	}
 }

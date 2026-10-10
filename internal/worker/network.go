@@ -152,6 +152,8 @@ table inet boxface {
 	chain forward {
 		type filter hook forward priority filter; policy accept;
 		iifname "%[1]s*" oifname "%[1]s*" drop
+		iifname "%[1]s*" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+		iifname "%[1]s*" ip6 daddr fd7a:115c:a1e0::/48 drop
 		iifname "%[1]s*" accept
 		oifname "%[1]s*" ct state established,related accept
 		oifname "%[1]s*" drop

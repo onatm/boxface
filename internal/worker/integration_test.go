@@ -60,14 +60,13 @@ func integrationConfig(t *testing.T) Config {
 		firecracker = "/usr/local/bin/firecracker"
 	}
 	return Config{
-		StateDir:           state,
-		ImagesDir:          images,
-		Firecracker:        firecracker,
-		VMUser:             "boxface-vm",
-		Pool:               netip.MustParsePrefix("172.20.0.0/16"),
-		AuthorizedKeysFile: key + ".pub",
-		ReadyTimeout:       2 * time.Minute,
-		StopTimeout:        30 * time.Second,
+		StateDir:     state,
+		ImagesDir:    images,
+		Firecracker:  firecracker,
+		VMUser:       "boxface-vm",
+		Pool:         netip.MustParsePrefix("172.20.0.0/16"),
+		ReadyTimeout: 2 * time.Minute,
+		StopTimeout:  30 * time.Second,
 	}
 }
 
@@ -119,9 +118,13 @@ func TestIntegrationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	publicKey, err := os.ReadFile(filepath.Join(cfg.StateDir, "key.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	specs := map[string]lifecycle.VMSpec{}
 	for _, id := range ids {
-		disk := lifecycle.DiskSpec{DiskID: id + "-disk", EnvironmentID: id, SizeGiB: 4}
+		disk := lifecycle.DiskSpec{DiskID: id + "-disk", EnvironmentID: id, SizeGiB: 4, AuthorizedKeys: []string{strings.TrimSpace(string(publicKey))}}
 		spec := lifecycle.VMSpec{EnvironmentID: id, DiskID: disk.DiskID, ImageID: itImageID, VCPUs: 1, MemoryMiB: 1024}
 		specs[id] = spec
 		started := time.Now()

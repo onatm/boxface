@@ -30,7 +30,6 @@ func main() {
 	firecracker := flag.String("firecracker", "/usr/local/bin/firecracker", "Firecracker binary")
 	vmUser := flag.String("vm-user", "boxface-vm", "unprivileged user that runs Firecracker")
 	pool := flag.String("pool", "172.20.0.0/16", "IPv4 pool for per-environment /30 networks")
-	authorizedKeys := flag.String("authorized-keys", "/etc/boxface/authorized_keys", "SSH public keys seeded into new data disks")
 	readyTimeout := flag.Duration("ready-timeout", 2*time.Minute, "how long to wait for guest readiness")
 	stopTimeout := flag.Duration("stop-timeout", 30*time.Second, "how long to wait for a clean guest shutdown")
 	flag.Parse()
@@ -40,14 +39,13 @@ func main() {
 		return
 	}
 	if err := run(*socket, *apiUser, worker.Config{
-		StateDir:           *stateDir,
-		ImagesDir:          *imagesDir,
-		Firecracker:        *firecracker,
-		VMUser:             *vmUser,
-		Pool:               netip.MustParsePrefix(*pool),
-		AuthorizedKeysFile: *authorizedKeys,
-		ReadyTimeout:       *readyTimeout,
-		StopTimeout:        *stopTimeout,
+		StateDir:     *stateDir,
+		ImagesDir:    *imagesDir,
+		Firecracker:  *firecracker,
+		VMUser:       *vmUser,
+		Pool:         netip.MustParsePrefix(*pool),
+		ReadyTimeout: *readyTimeout,
+		StopTimeout:  *stopTimeout,
 	}); err != nil {
 		slog.Error("boxface-worker", "error", err)
 		os.Exit(1)
