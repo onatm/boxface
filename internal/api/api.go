@@ -22,15 +22,21 @@ import (
 const maxBody = 1 << 20
 
 type Server struct {
-	Auth         *auth.Store
-	Lifecycle    *lifecycle.Service
-	Images       *images.Registry
-	SSHKeys      *sshkeys.Store
-	Capacity     lifecycle.Capacity
-	PollInterval time.Duration
+	Auth          *auth.Store
+	Lifecycle     *lifecycle.Service
+	Images        *images.Registry
+	SSHKeys       *sshkeys.Store
+	Capacity      lifecycle.Capacity
+	PollInterval  time.Duration
+	LoginFailures int
+	LoginWindow   time.Duration
+
+	limiter *loginLimiter
 }
 
 type ownerKey struct{}
+
+type tokenKey struct{}
 
 type apiError struct {
 	Code      string `json:"code"`
@@ -39,6 +45,13 @@ type apiError struct {
 }
 
 func (s *Server) Handler() http.Handler {
+	if s.LoginFailures == 0 {
+		s.LoginFailures = 10
+	}
+	if s.LoginWindow == 0 {
+		s.LoginWindow = 10 * time.Minute
+	}
+	s.limiter = newLoginLimiter(s.LoginFailures, s.LoginWindow)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -46,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/login", s.login)
 	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
 	authed("GET /v1/capabilities", s.capabilities)
+	authed("GET /v1/tokens", s.listTokens)
+	authed("DELETE /v1/tokens/{id}", s.revokeToken)
 	authed("POST /v1/images", s.importImage)
 	authed("GET /v1/images", s.listImages)
 	authed("PUT /v1/image-aliases/{name}", s.setImageAlias)
@@ -72,12 +87,13 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			writeError(w, auth.ErrUnauthorized)
 			return
 		}
-		owner, err := s.Auth.Authenticate(r.Context(), token)
+		owner, tokenID, err := s.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ownerKey{}, owner)))
+		ctx := context.WithValue(context.WithValue(r.Context(), ownerKey{}, owner), tokenKey{}, tokenID)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -93,19 +109,46 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	addr := clientAddr(r)
+	if !s.limiter.allow(addr) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.LoginWindow.Seconds())))
+		writeError(w, errRateLimited)
+		return
+	}
 	var req struct {
 		Code string `json:"code"`
+		Name string `json:"name"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
-	token, ownerID, err := s.Auth.Login(r.Context(), req.Code)
+	token, ownerID, err := s.Auth.Login(r.Context(), req.Code, req.Name, addr)
+	if errors.Is(err, auth.ErrUnauthorized) {
+		s.limiter.fail(addr)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"token": token, "owner_id": ownerID})
+}
+
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Auth.Tokens(r.Context(), owner(r), r.Context().Value(tokenKey{}).(string))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": list})
+}
+
+func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.Revoke(r.Context(), owner(r), r.PathValue("id"), clientAddr(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
@@ -361,6 +404,9 @@ func writeError(w http.ResponseWriter, err error) {
 		code   string
 	}{
 		{auth.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
+		{errRateLimited, http.StatusTooManyRequests, "rate_limited"},
+		{auth.ErrInvalidName, http.StatusBadRequest, "invalid_request"},
+		{auth.ErrTokenNotFound, http.StatusNotFound, "not_found"},
 		{lifecycle.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidSource, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidAlias, http.StatusBadRequest, "invalid_request"},
@@ -384,5 +430,5 @@ func writeError(w http.ResponseWriter, err error) {
 		slog.Error("request failed", "error", err)
 		message = "internal error"
 	}
-	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Retryable: status >= 500}})
+	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Retryable: status >= 500 || status == http.StatusTooManyRequests}})
 }

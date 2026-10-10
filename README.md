@@ -87,18 +87,51 @@ Run these as root on the host.
    chown -R boxface:boxface /var/lib/boxface/import/base
    ```
 
-## Use
+## Expose the API
 
-The API listens on localhost only, so reach it through an SSH tunnel to the host:
+The API listens on `127.0.0.1:7443` only. Choose how clients reach it, and put the flags in a service override with `systemctl edit boxface-api`.
+
+**Tailscale**, for a host whose public address is disabled:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/boxface-api serve -tailscale-socket /var/lib/boxface/api/tailscale.sock
+```
+
+Then publish the socket to your tailnet. The first time, Tailscale prints a link to enable Serve and HTTPS certificates for the tailnet:
+
+```sh
+tailscale serve --bg unix:/var/lib/boxface/api/tailscale.sock
+```
+
+Clients use `https://<host>.<tailnet>.ts.net`.
+
+**A public address**, with a Let's Encrypt certificate for a domain that resolves to the host and port 443 open:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/boxface-api serve -tls-listen :443 -tls-domain boxface.example.com
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+To use your own certificate instead, pass `-tls-cert FILE -tls-key FILE`; restart the service to load a renewed certificate.
+
+**An SSH tunnel** needs no change on the host:
 
 ```sh
 ssh -f -N -L 7443:127.0.0.1:7443 root@<host>
 ```
 
-Log in with the code from step 3, and register the image staged in step 4:
+After 10 failed logins from one address, that address can't log in until 10 minutes after the first failure.
+
+## Use
+
+Log in with the code from step 2 of the install, and register the image staged in step 3:
 
 ```sh
-boxfacectl login http://127.0.0.1:7443                   # prompts for the code
+boxfacectl login https://<host>.<tailnet>.ts.net          # or https://boxface.example.com, or http://127.0.0.1:7443 over a tunnel
 boxfacectl image import base --alias main                 # hashes and registers it as the default image
 boxfacectl image list
 ```

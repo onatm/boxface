@@ -28,7 +28,8 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | Method and route | Purpose |
 | --- | --- |
 | `GET /health` | Minimal liveness; no sensitive metadata. *Implemented* |
-| `POST /v1/login` | Exchange a one-time bootstrap code for an API token. *Implemented* |
+| `POST /v1/login` | Exchange a one-time bootstrap code for an API token, `{"code", "name"}`; the name identifies the client. *Implemented* |
+| `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | List the owner's active tokens with name, creation, last use (to the minute), and which one made the request; revoke one. *Implemented* |
 | `GET /v1/capabilities` | Version, architecture, hypervisor, and capacity limits. *Implemented* |
 | `POST /v1/recipes` | Validate/store recipe revision |
 | `POST /v1/profiles` | Validate/store user-profile revision |
@@ -70,8 +71,9 @@ Long-running mutations return `202 Accepted` with `operation_id` and `environmen
 ### Authentication
 
 - `boxface-api bootstrap -owner NAME`, run on the host as the `boxface` user, creates the owner if needed and prints a one-time login code valid for 15 minutes. `POST /v1/login` exchanges it once for an API token.
-- Codes and tokens are stored only as SHA-256 hashes; there is no default password. `boxface-api revoke -owner NAME` revokes all of an owner's tokens.
-- The API listens on `127.0.0.1:7443` by default without TLS; exposing it on the private network, and TLS, are part of the [Access and Sessions](./access-and-sessions.md) stage.
+- Codes and tokens are stored only as SHA-256 hashes; there is no default password. `DELETE /v1/tokens/{id}` revokes one token; `boxface-api revoke -owner NAME` revokes all of an owner's tokens. Logins and revocations are recorded with the client address in `auth_events`.
+- After 10 failed logins from one address in 10 minutes, `POST /v1/login` returns `429 rate_limited` (retryable, with `Retry-After`) for that address until the window ends.
+- Listeners, any combination: `-listen` (plain HTTP, default `127.0.0.1:7443`, empty disables it); `-tls-listen` with `-tls-domain` (Let's Encrypt over TLS-ALPN-01, so port 443, cached in `-acme-dir`) or `-tls-cert` and `-tls-key`; `-tailscale-socket`, a Unix socket (mode 0600) for `tailscale serve`. Every listener has header and idle timeouts. `X-Forwarded-For` is trusted only on the Tailscale socket, whose proxy is `tailscaled`; it gives the client address for rate limiting and audit.
 - Browser access uses an authenticated secure session and CSRF protection.
 - Full OIDC is deferred.
 
@@ -82,6 +84,8 @@ Use SQLite transactions for local metadata.
 | Record | Essential fields |
 | --- | --- |
 | Owner | ID, authentication records, permitted bindings, create defaults |
+| API token | ID, owner, SHA-256 hash, client name, creation, last use, revocation |
+| Auth event | Owner, action (`login`, `token.revoke`), token ID, client address, time |
 | SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
 | Image alias | Name, image ID; repointing never changes existing environments |
 | Recipe revision | ID, source YAML, canonical spec, parent/name, creation time |

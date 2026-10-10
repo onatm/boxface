@@ -237,7 +237,7 @@ func (c *cli) login(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	token, err := client.New(*server, "").Login(ctx, *code)
+	token, err := client.New(*server, "").Login(ctx, *code, deviceName())
 	if err != nil {
 		return err
 	}
@@ -255,8 +255,7 @@ func (c *cli) login(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (c *cli) registerDevice(ctx context.Context, api *client.Client) error {
-	path := filepath.Join(filepath.Dir(c.configPath), "id_ed25519")
+func deviceName() string {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "boxfacectl"
@@ -264,6 +263,12 @@ func (c *cli) registerDevice(ctx context.Context, api *client.Client) error {
 	if len(host) > 64 {
 		host = host[:64]
 	}
+	return host
+}
+
+func (c *cli) registerDevice(ctx context.Context, api *client.Client) error {
+	path := filepath.Join(filepath.Dir(c.configPath), "id_ed25519")
+	host := deviceName()
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "boxfacectl@"+host, "-f", path).CombinedOutput(); err != nil {
 			return fmt.Errorf("ssh-keygen: %w: %s", err, strings.TrimSpace(string(out)))

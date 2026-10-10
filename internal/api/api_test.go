@@ -36,12 +36,13 @@ func (noopWorker) StopVM(context.Context, string) error                 { return
 func (noopWorker) WaitReady(context.Context, string) error              { return nil }
 
 type env struct {
-	t       *testing.T
-	srv     *httptest.Server
-	runner  *lifecycle.Runner
-	tokens  map[string]string
-	imageID string
-	stage   func(name string)
+	t         *testing.T
+	srv       *httptest.Server
+	authStore *auth.Store
+	runner    *lifecycle.Runner
+	tokens    map[string]string
+	imageID   string
+	stage     func(name string)
 }
 
 func setup(t *testing.T, capacity lifecycle.Capacity) *env {
@@ -68,7 +69,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
 
-	e := &env{t: t, srv: srv, runner: runner, tokens: map[string]string{}}
+	e := &env{t: t, srv: srv, authStore: authStore, runner: runner, tokens: map[string]string{}}
 	e.stage = func(name string) {
 		os.MkdirAll(filepath.Join(importDir, name), 0o755)
 		os.WriteFile(filepath.Join(importDir, name, "vmlinux"), []byte("kernel "+name), 0o644)
@@ -360,5 +361,48 @@ func TestSSHKeyRoutes(t *testing.T) {
 	e.do("one", http.MethodDelete, "/v1/ssh-keys/"+again.ID, nil, http.StatusNoContent, nil)
 	if code := e.errorCode("one", http.MethodPost, "/v1/environments", e.createRequest("travel"), http.StatusBadRequest); code != "invalid_request" {
 		t.Fatalf("create without keys: code = %s", code)
+	}
+}
+
+func TestTokenRoutes(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	code, err := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var login map[string]string
+	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code, "name": "tablet"}, http.StatusOK, &login)
+	e.tokens["tablet"] = login["token"]
+
+	var list struct {
+		Tokens []auth.Token `json:"tokens"`
+	}
+	e.do("tablet", http.MethodGet, "/v1/tokens", nil, http.StatusOK, &list)
+	if len(list.Tokens) != 2 || list.Tokens[0].Name != "unnamed" || list.Tokens[1].Name != "tablet" || !list.Tokens[1].Current || list.Tokens[0].Current {
+		t.Fatalf("tokens = %+v", list.Tokens)
+	}
+	e.errorCode("two", http.MethodDelete, "/v1/tokens/"+list.Tokens[1].ID, nil, http.StatusNotFound)
+	e.do("one", http.MethodDelete, "/v1/tokens/"+list.Tokens[1].ID, nil, http.StatusNoContent, nil)
+	e.errorCode("tablet", http.MethodGet, "/v1/environments", nil, http.StatusUnauthorized)
+	e.do("one", http.MethodGet, "/v1/environments", nil, http.StatusOK, nil)
+}
+
+func TestFailedLoginsAreRateLimited(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	for i := 0; i < 9; i++ {
+		e.errorCode("", http.MethodPost, "/v1/login", map[string]string{"code": "WRONG"}, http.StatusUnauthorized)
+	}
+	resp := e.request("", http.MethodPost, "/v1/login", map[string]string{"code": "WRONG"}, map[string]string{"X-Forwarded-For": "100.64.0.9"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("tenth failure: status %d", resp.StatusCode)
+	}
+	code, _ := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
+	var resp429 struct {
+		Error apiError `json:"error"`
+	}
+	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code}, http.StatusTooManyRequests, &resp429)
+	if resp429.Error.Code != "rate_limited" || !resp429.Error.Retryable {
+		t.Fatalf("error = %+v", resp429.Error)
 	}
 }

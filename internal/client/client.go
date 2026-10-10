@@ -111,11 +111,11 @@ func key(idempotencyKey string) map[string]string {
 	return map[string]string{"Idempotency-Key": idempotencyKey}
 }
 
-func (c *Client) Login(ctx context.Context, code string) (string, error) {
+func (c *Client) Login(ctx context.Context, code, name string) (string, error) {
 	var out struct {
 		Token string `json:"token"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/login", map[string]string{"code": code}, nil, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/login", map[string]string{"code": code, "name": name}, nil, &out)
 	return out.Token, err
 }
 

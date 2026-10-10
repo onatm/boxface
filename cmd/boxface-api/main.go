@@ -56,7 +56,14 @@ func main() {
 
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	listen := fs.String("listen", "127.0.0.1:7443", "address to serve the API on")
+	var lc listenConfig
+	fs.StringVar(&lc.addr, "listen", "127.0.0.1:7443", "plain HTTP address to serve the API on; empty disables it")
+	fs.StringVar(&lc.tlsAddr, "tls-listen", "", "HTTPS address to serve the API on, such as :443")
+	fs.StringVar(&lc.tlsDomain, "tls-domain", "", "domain to obtain a Let's Encrypt certificate for; needs -tls-listen on port 443")
+	fs.StringVar(&lc.tlsCert, "tls-cert", "", "certificate file for -tls-listen, instead of -tls-domain")
+	fs.StringVar(&lc.tlsKey, "tls-key", "", "private key file for -tls-cert")
+	fs.StringVar(&lc.acmeDir, "acme-dir", "/var/lib/boxface/api/acme", "directory caching Let's Encrypt account and certificates")
+	fs.StringVar(&lc.tailscaleSocket, "tailscale-socket", "", "Unix socket for tailscale serve, such as /var/lib/boxface/api/tailscale.sock")
 	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
 	workerSocket := fs.String("worker-socket", "/run/boxface/worker.sock", "host worker socket")
 	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
@@ -87,13 +94,11 @@ func serve(args []string) error {
 		Capacity:     capacity,
 		PollInterval: 500 * time.Millisecond,
 	}
-	srv := &http.Server{Addr: *listen, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdown)
-	}()
+	eps, err := listen(lc, server.Handler())
+	if err != nil {
+		runner.Wait()
+		return err
+	}
 
 	reconcile(ctx, runner, client)
 	runner.Kick()
@@ -107,12 +112,26 @@ func serve(args []string) error {
 			}
 		}
 	}()
-	slog.Info("boxface-api listening", "address", *listen, "version", version.Version)
-	err = srv.ListenAndServe()
-	runner.Wait()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	failed := make(chan error, len(eps))
+	for _, ep := range eps {
+		slog.Info("boxface-api listening", "address", ep.name, "version", version.Version)
+		go func() {
+			if err := ep.server.Serve(ep.listener); !errors.Is(err, http.ErrServerClosed) {
+				failed <- fmt.Errorf("%s: %w", ep.name, err)
+			}
+		}()
 	}
+	select {
+	case <-ctx.Done():
+	case err = <-failed:
+		stop()
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, ep := range eps {
+		ep.server.Shutdown(shutdown)
+	}
+	runner.Wait()
 	return err
 }
 
