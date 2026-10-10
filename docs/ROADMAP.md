@@ -81,7 +81,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
-- **Candidate bets:** A built-in secret store for agent credentials so environments need no per-environment sign-in ([Credential Broker](./designs/credential-broker.md#storage)), the rest of the [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
+- **Candidate bets:** A built-in secret store for agent credentials so environments need no per-environment sign-in ([Agent Credential Store](./plans/2026-10-secret-store.md) plan, proposed), the rest of the [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
 - **Confidence:** Medium.
