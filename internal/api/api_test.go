@@ -459,9 +459,10 @@ func TestConnectionAndSSHTunnel(t *testing.T) {
 	e.do("one", http.MethodPost, "/v1/environments", e.createRequest("travel"), http.StatusAccepted, &acc)
 	e.runner.Wait()
 
-	var conn map[string]string
+	var conn map[string]any
 	e.do("one", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusOK, &conn)
-	if conn["user"] != "dev" || conn["host_key"] != "ssh-ed25519 AAAAhost" || conn["environment_id"] != acc.EnvironmentID {
+	fps, _ := conn["key_fingerprints"].([]any)
+	if conn["user"] != "dev" || conn["host_key"] != "ssh-ed25519 AAAAhost" || conn["environment_id"] != acc.EnvironmentID || len(fps) != 1 {
 		t.Fatalf("connection = %+v", conn)
 	}
 	e.errorCode("two", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusNotFound)

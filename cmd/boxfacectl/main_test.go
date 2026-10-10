@@ -397,3 +397,27 @@ func TestLoginWithTailscaleIdentityNeedsNoCode(t *testing.T) {
 		t.Fatalf("code login on a plain listener: exit %d, %s", code, errOut)
 	}
 }
+
+func TestConnectFromALaterDeviceNeedsARestart(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	first := h.config
+
+	code, err := h.authStore.Bootstrap(context.Background(), "onat", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.config = filepath.Join(t.TempDir(), "tablet", "config.json")
+	h.ok("login", h.server, "--code", code)
+	status, _, errOut := h.run(context.Background(), "", false, "connect", "travel")
+	if status != exitError || !strings.Contains(errOut, "does not accept this device's key yet") || !strings.Contains(errOut, "boxfacectl stop travel") || len(h.sshCalls) != 0 {
+		t.Fatalf("connect from the tablet: exit %d, ssh %v, %s", status, h.sshCalls, errOut)
+	}
+	h.ok("stop", "travel")
+	h.ok("connect", "travel")
+	if len(h.sshCalls) != 1 {
+		t.Fatalf("ssh calls after restart = %v", h.sshCalls)
+	}
+	h.config = first
+	h.ok("connect", "travel")
+}

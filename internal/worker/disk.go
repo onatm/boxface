@@ -18,14 +18,6 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 	if spec.SizeGiB < 1 {
 		return fmt.Errorf("disk size %d GiB is too small", spec.SizeGiB)
 	}
-	if len(spec.AuthorizedKeys) == 0 {
-		return errors.New("no authorized keys to seed")
-	}
-	for _, k := range spec.AuthorizedKeys {
-		if k == "" || strings.ContainsAny(k, "\r\n") {
-			return errors.New("authorized key must be a single non-empty line")
-		}
-	}
 	path := h.diskPath(spec.DiskID)
 	if ok, err := exists(path); err != nil || ok {
 		return err
@@ -36,21 +28,6 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 		return err
 	}
 	defer os.RemoveAll(seed)
-	sshDir := filepath.Join(seed, "home", ".ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(sshDir, "authorized_keys"), []byte(strings.Join(spec.AuthorizedKeys, "\n")+"\n"), 0o600); err != nil {
-		return err
-	}
-	for _, p := range []string{filepath.Join(seed, "home"), sshDir, filepath.Join(sshDir, "authorized_keys")} {
-		if err := os.Chown(p, guestUID, guestUID); err != nil {
-			return err
-		}
-	}
-	if err := os.Chmod(filepath.Join(seed, "home"), 0o700); err != nil {
-		return err
-	}
 	hostKeyDir := filepath.Join(seed, "boxface", "ssh")
 	if err := os.MkdirAll(hostKeyDir, 0o700); err != nil {
 		return err

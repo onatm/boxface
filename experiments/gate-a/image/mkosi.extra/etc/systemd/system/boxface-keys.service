@@ -1,0 +1,13 @@
+[Unit]
+Description=Load the owner's SSH keys from the Boxface keys drive
+Requires=dev-vdc.device
+After=dev-vdc.device
+Before=ssh.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/boxface-keys
+
+[Install]
+WantedBy=multi-user.target

@@ -23,6 +23,7 @@ import (
 
 	"github.com/onatm/boxface/internal/client"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
 	"golang.org/x/term"
 )
@@ -621,6 +622,11 @@ func (c *cli) connect(ctx context.Context, args []string) error {
 		return err
 	}
 	dir := filepath.Dir(c.configPath)
+	if pub, err := os.ReadFile(filepath.Join(dir, "id_ed25519.pub")); err == nil && len(conn.Fingerprints) > 0 {
+		if _, fp, err := sshkeys.Parse(string(pub)); err == nil && !slices.Contains(conn.Fingerprints, fp) {
+			return fmt.Errorf("%s does not accept this device's key yet: keys apply when an environment starts, and %s started before this device logged in.\nrestart it to apply the key: boxfacectl stop %s && boxfacectl connect %s", env.Name, env.Name, env.Name, env.Name)
+		}
+	}
 	knownHosts := filepath.Join(dir, "known_hosts")
 	if err := pinHostKey(knownHosts, env.ID, conn.HostKey); err != nil {
 		return err

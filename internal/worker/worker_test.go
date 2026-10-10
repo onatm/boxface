@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -102,7 +103,8 @@ func TestFirecrackerConfig(t *testing.T) {
 	if cfg.BootSource.Kernel != "/images/image-1/vmlinux" {
 		t.Fatalf("kernel = %q", cfg.BootSource.Kernel)
 	}
-	if len(cfg.Drives) != 2 || !cfg.Drives[0].Root || !cfg.Drives[0].ReadOnly || cfg.Drives[1].ReadOnly || cfg.Drives[1].Path != h.diskPath("disk-a") {
+	if len(cfg.Drives) != 3 || !cfg.Drives[0].Root || !cfg.Drives[0].ReadOnly || cfg.Drives[1].ReadOnly || cfg.Drives[1].Path != h.diskPath("disk-a") ||
+		cfg.Drives[2].Root || !cfg.Drives[2].ReadOnly || cfg.Drives[2].Path != filepath.Join(h.envDir("env-a"), keysImage) {
 		t.Fatalf("drives = %+v", cfg.Drives)
 	}
 	if cfg.Network[0].MAC != "06:00:ac:14:00:06" || cfg.Network[0].Tap != tapName("env-a") {
@@ -275,18 +277,22 @@ func TestConsoleSummary(t *testing.T) {
 	}
 }
 
-func TestCreateDiskRejectsMissingOrMultilineKeys(t *testing.T) {
-	h := testHost(t)
+func TestKeysImage(t *testing.T) {
+	b, err := keysImageContent([]string{"ssh-ed25519 AAAAone", "ssh-ed25519 AAAAtwo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 4096 || string(bytes.TrimRight(b, "\x00")) != "ssh-ed25519 AAAAone\nssh-ed25519 AAAAtwo\n" {
+		t.Fatalf("image = %d bytes, %q", len(b), bytes.TrimRight(b, "\x00"))
+	}
 	for name, keys := range map[string][]string{
 		"none":      nil,
 		"empty":     {""},
 		"multiline": {"ssh-ed25519 AAAA\nssh-ed25519 BBBB"},
+		"nul":       {"ssh-ed25519 AAAA\x00"},
 	} {
-		if err := h.CreateDisk(context.Background(), lifecycle.DiskSpec{DiskID: "disk-a", SizeGiB: 1, AuthorizedKeys: keys}); err == nil {
-			t.Fatalf("%s: CreateDisk accepted %q", name, keys)
+		if _, err := keysImageContent(keys); err == nil {
+			t.Fatalf("%s: accepted %q", name, keys)
 		}
-	}
-	if _, err := os.Stat(h.diskPath("disk-a")); !os.IsNotExist(err) {
-		t.Fatalf("rejected spec left a disk: %v", err)
 	}
 }

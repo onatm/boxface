@@ -220,9 +220,11 @@ func (r *Runner) load(ctx context.Context, id string) (job, error) {
 		if err := json.Unmarshal([]byte(params), &p); err != nil {
 			return job{}, fmt.Errorf("decode operation %s params: %w", id, err)
 		}
-		j.disk.AuthorizedKeys = p.AuthorizedKeys
+		j.env.AuthorizedKeys = p.AuthorizedKeys
 	} else if err := json.Unmarshal([]byte(params), &j.params); err != nil {
 		return job{}, fmt.Errorf("decode operation %s params: %w", id, err)
+	} else {
+		j.env.AuthorizedKeys = j.params.AuthorizedKeys
 	}
 	j.env.DiskID = j.disk.DiskID
 	j.disk.EnvironmentID = j.env.EnvironmentID

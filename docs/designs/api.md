@@ -43,13 +43,13 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | `PUT /v1/image-aliases/{name}` | Point an alias such as `main` at an image, `{"image_id": "..."}`; existing environments keep their image. *Implemented* |
 | `GET /v1/defaults`, `PUT /v1/defaults` | The owner's create defaults: `image` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`. Without saved defaults: `main`, 2, 2048, 20. `GET` adds `saved`. *Implemented* |
 | `GET /v1/ssh-keys`, `POST /v1/ssh-keys`, `DELETE /v1/ssh-keys/{id}` | The owner's SSH public keys, `{"name", "public_key"}`; one key line without options; `201` when new, `200` with the existing key when the fingerprint matches. *Implemented* |
-| `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name` and optional `image_id` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`; omitted fields come from the owner's defaults, are resolved once, and the environment records the concrete values. The owner's SSH keys at submission are seeded into the new disk; a create with no registered key is rejected |
+| `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name` and optional `image_id` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`; omitted fields come from the owner's defaults, are resolved once, and the environment records the concrete values. The owner's SSH keys at submission are recorded with the operation and given to the VM; a create with no registered key is rejected |
 | `GET /v1/environments` | List authorised environments, including deleted ones whose disk is retained. *Implemented* |
 | `GET /v1/environments/{id}` | Inspect revision, state, resources, operations. *Implemented* |
-| `POST /v1/environments/{id}/start` | Start retained environment. *Implemented* |
+| `POST /v1/environments/{id}/start` | Start retained environment. The owner's SSH keys at submission are recorded with the operation and given to the VM, so keys added or removed since the last start apply; a start with no registered key is rejected. *Implemented* |
 | `POST /v1/environments/{id}/stop` | Graceful shutdown. *Implemented* |
 | `DELETE /v1/environments/{id}` | Remove environment; preserve data unless `?purge=true`. *Implemented* |
-| `GET /v1/environments/{id}/connection` | SSH connection information: `{"environment_id", "user", "host_key"}`, the pinned public host key generated with the disk. Refused for a deleted environment. *Implemented* |
+| `GET /v1/environments/{id}/connection` | SSH connection information: `{"environment_id", "user", "host_key", "key_fingerprints"}`, where `key_fingerprints` are the keys the environment last started with, the pinned public host key generated with the disk. Refused for a deleted environment. *Implemented* |
 | `GET /v1/environments/{id}/ssh` | SSH tunnel: with `Connection: Upgrade` and `Upgrade: boxface-ssh` over HTTP/1.1, returns `101` and splices the connection to port 22 of the owned environment's guest. Only a `running` environment is dialed; the worker supplies the address and the API never dials another port. Each tunnel is recorded as `environment.connect`. *Implemented* |
 | `POST /v1/environments/{id}/sessions` | Start named user session |
 | `GET /v1/environments/{id}/sessions` | List sessions |

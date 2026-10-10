@@ -142,7 +142,7 @@ boxfacectl login https://<host>.<tailnet>.ts.net          # or https://boxface.e
 
 Images can also be registered from the CLI: `boxfacectl image import base --alias main`, then `boxfacectl image list`.
 
-`login` also creates an SSH key for this device (`id_ed25519` next to the login file) and registers its public key with the server. New environments accept the keys registered when they are created.
+`login` also creates an SSH key for this device (`id_ed25519` next to the login file) and registers its public key with the server. An environment accepts the keys registered when it last started, so after logging in on a new device, restart existing environments once (`boxfacectl stop NAME`, then `connect NAME`); `connect` tells you when this is needed. Removing a key takes effect the same way.
 
 Manage environments:
 

@@ -3,18 +3,18 @@ package lifecycle
 import "context"
 
 type DiskSpec struct {
-	DiskID         string
-	EnvironmentID  string
-	SizeGiB        int
-	AuthorizedKeys []string
+	DiskID        string
+	EnvironmentID string
+	SizeGiB       int
 }
 
 type VMSpec struct {
-	EnvironmentID string
-	DiskID        string
-	ImageID       string
-	VCPUs         int
-	MemoryMiB     int
+	EnvironmentID  string
+	DiskID         string
+	ImageID        string
+	VCPUs          int
+	MemoryMiB      int
+	AuthorizedKeys []string
 }
 
 type Worker interface {

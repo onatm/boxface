@@ -79,8 +79,9 @@ type queryer interface {
 }
 
 type targetParams struct {
-	EnvironmentID string `json:"environment_id"`
-	Purge         bool   `json:"purge,omitempty"`
+	EnvironmentID  string   `json:"environment_id"`
+	Purge          bool     `json:"purge,omitempty"`
+	AuthorizedKeys []string `json:"authorized_keys,omitempty"`
 }
 
 type Capacity struct {
@@ -257,6 +258,14 @@ func (s *Service) submitForEnvironment(ctx context.Context, ownerID, idempotency
 		if opType == TypeDelete {
 			return params.EnvironmentID, nil, audit(ctx, tx, ownerID, "environment.delete", params.EnvironmentID, opID)
 		}
+		if opType == TypeStart {
+			keys, err := authorizedKeys(ctx, tx, ownerID)
+			if err != nil {
+				return "", nil, err
+			}
+			params.AuthorizedKeys = keys
+			return params.EnvironmentID, params, nil
+		}
 		return params.EnvironmentID, nil, nil
 	})
 }
@@ -354,6 +363,31 @@ func (s *Service) Environment(ctx context.Context, ownerID, id string) (Environm
 		return Environment{}, ErrNotFound
 	}
 	return env, err
+}
+
+func (s *Service) StartedKeys(ctx context.Context, ownerID, environmentID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT type, params FROM operations WHERE owner_id = ? AND target_id = ? AND type IN (?, ?) AND state = 'succeeded' ORDER BY rowid DESC`,
+		ownerID, environmentID, TypeCreate, TypeStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var opType, params string
+		if err := rows.Scan(&opType, &params); err != nil {
+			return nil, err
+		}
+		var p struct {
+			AuthorizedKeys []string `json:"authorized_keys"`
+		}
+		if err := json.Unmarshal([]byte(params), &p); err != nil {
+			return nil, err
+		}
+		if len(p.AuthorizedKeys) > 0 {
+			return p.AuthorizedKeys, nil
+		}
+	}
+	return nil, rows.Err()
 }
 
 func (s *Service) checkCapacity(ctx context.Context, tx *sql.Tx, req CreateRequest) error {

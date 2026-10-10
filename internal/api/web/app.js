@@ -322,13 +322,13 @@ views.keys = async () => {
   }));
   render(
     h("h1", {}, "SSH keys"),
-    h("p", { class: "lead" }, "New environments accept these keys. Existing environments keep the keys they were created with."),
+    h("p", { class: "lead" }, "Environments accept these keys from their next start. Removing a key takes effect when an environment next starts."),
     keys.ssh_keys.length === 0 ? h("p", { class: "muted" }, "No keys yet.") : h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Fingerprint"), h("th", { class: "optional" }, "Added"), h("th", {}, ""))),
       h("tbody", {}, keys.ssh_keys.map((k) => {
         const rm = h("button", { type: "button", class: "danger" }, "Remove");
         rm.addEventListener("click", busy(rm, "Removing…", async () => {
-          if (!confirm(`Remove the key ${k.name}? Environments created from now on will not accept it.`)) return;
+          if (!confirm(`Remove the key ${k.name}? Environments stop accepting it at their next start.`)) return;
           await api("DELETE", `/v1/ssh-keys/${encodeURIComponent(k.id)}`);
           await views.keys();
         }));

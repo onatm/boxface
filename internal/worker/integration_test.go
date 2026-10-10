@@ -124,8 +124,8 @@ func TestIntegrationLifecycle(t *testing.T) {
 	}
 	specs := map[string]lifecycle.VMSpec{}
 	for _, id := range ids {
-		disk := lifecycle.DiskSpec{DiskID: id + "-disk", EnvironmentID: id, SizeGiB: 4, AuthorizedKeys: []string{strings.TrimSpace(string(publicKey))}}
-		spec := lifecycle.VMSpec{EnvironmentID: id, DiskID: disk.DiskID, ImageID: itImageID, VCPUs: 1, MemoryMiB: 1024}
+		disk := lifecycle.DiskSpec{DiskID: id + "-disk", EnvironmentID: id, SizeGiB: 4}
+		spec := lifecycle.VMSpec{EnvironmentID: id, DiskID: disk.DiskID, ImageID: itImageID, VCPUs: 1, MemoryMiB: 1024, AuthorizedKeys: []string{strings.TrimSpace(string(publicKey))}}
 		specs[id] = spec
 		started := time.Now()
 		for i := 0; i < 2; i++ {
@@ -210,6 +210,54 @@ func TestIntegrationLifecycle(t *testing.T) {
 		}
 	}
 	t.Logf("worker restart to rediscovered in %s", time.Since(restarted).Round(time.Millisecond))
+
+	second := filepath.Join(cfg.StateDir, "key2")
+	if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", second).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v: %s", err, out)
+	}
+	secondPublic, err := os.ReadFile(second + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshAs := func(key string) error {
+		out, err := exec.Command("ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+			"-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=10", "dev@"+endpoint.String(), "true").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
+	if err := sshAs(second); err == nil {
+		t.Fatal("a key registered after start was accepted before a restart")
+	}
+	restart := func(keys ...string) {
+		t.Helper()
+		if err := h.StopVM(ctx, ids[0]); err != nil {
+			t.Fatal(err)
+		}
+		spec := specs[ids[0]]
+		spec.AuthorizedKeys = keys
+		if err := h.StartVM(ctx, spec); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.WaitReady(ctx, ids[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restart(strings.TrimSpace(string(publicKey)), strings.TrimSpace(string(secondPublic)))
+	if err := sshAs(second); err != nil {
+		t.Fatalf("a key passed at start was refused: %v", err)
+	}
+	restart(strings.TrimSpace(string(secondPublic)))
+	if err := sshAs(filepath.Join(cfg.StateDir, "key")); err == nil {
+		t.Fatal("a key left out at start was still accepted")
+	}
+	if err := sshAs(second); err != nil {
+		t.Fatalf("the remaining key was refused: %v", err)
+	}
+	if endpoint, err = h.Endpoint(ctx, ids[0]); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, id := range ids {
 		stopped := time.Now()

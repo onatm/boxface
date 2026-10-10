@@ -69,7 +69,7 @@ func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error 
 }
 
 func (f *fakeWorker) CreateDisk(ctx context.Context, spec DiskSpec) error {
-	return f.call(ctx, "CreateDisk", func() { f.disks[spec.DiskID] = true; f.keys[spec.DiskID] = spec.AuthorizedKeys })
+	return f.call(ctx, "CreateDisk", func() { f.disks[spec.DiskID] = true })
 }
 func (f *fakeWorker) RemoveDisk(ctx context.Context, diskID string) error {
 	return f.call(ctx, "RemoveDisk", func() { delete(f.disks, diskID) })
@@ -81,7 +81,7 @@ func (f *fakeWorker) RemoveNetwork(ctx context.Context, id string) error {
 	return f.call(ctx, "RemoveNetwork", nil)
 }
 func (f *fakeWorker) StartVM(ctx context.Context, spec VMSpec) error {
-	return f.call(ctx, "StartVM", func() { f.vms[spec.EnvironmentID] = true })
+	return f.call(ctx, "StartVM", func() { f.vms[spec.EnvironmentID] = true; f.keys[spec.EnvironmentID] = spec.AuthorizedKeys })
 }
 func (f *fakeWorker) StopVM(ctx context.Context, id string) error {
 	return f.call(ctx, "StopVM", func() { delete(f.vms, id) })
@@ -610,8 +610,8 @@ func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
 	if env.ImageID != image || env.VCPUs != 2 || env.MemoryMiB != 2048 || env.ObservedState != "running" {
 		t.Fatalf("environment from built-in defaults = %+v", env)
 	}
-	if keys := w.keys[env.DiskID]; len(keys) != 1 || !strings.HasPrefix(keys[0], "ssh-ed25519 ") {
-		t.Fatalf("disk keys = %q", keys)
+	if keys := w.keys[env.ID]; len(keys) != 1 || !strings.HasPrefix(keys[0], "ssh-ed25519 ") {
+		t.Fatalf("VM keys = %q", keys)
 	}
 
 	if _, err := db.Exec(`UPDATE image_aliases SET image_id = 'image-2' WHERE name = 'main'`); err != nil {
@@ -678,7 +678,56 @@ func TestResumedCreateSeedsKeysRecordedAtSubmit(t *testing.T) {
 	r2.Kick()
 	r2.Wait()
 	env := mustEnvironment(t, s2, acc.EnvironmentID)
-	if env.ObservedState != "running" || len(second.keys[env.DiskID]) != 1 {
-		t.Fatalf("environment %+v, disk keys %q", env, second.keys[env.DiskID])
+	if env.ObservedState != "running" || len(second.keys[env.ID]) != 1 {
+		t.Fatalf("environment %+v, VM keys %q", env, second.keys[env.ID])
+	}
+}
+
+func TestStartUsesTheOwnersCurrentKeys(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+	acc, err := s.Create(ctx, owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Stop(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := db.Exec(`INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at) VALUES
+		('key-tablet', ?, 'tablet', 'ssh-ed25519 AAAAtablet', 'SHA256:tablet', '2026-10-10T00:00:00Z')`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if keys := w.keys[acc.EnvironmentID]; len(keys) != 2 || keys[1] != "ssh-ed25519 AAAAtablet" {
+		t.Fatalf("keys after a new device registered = %q", keys)
+	}
+
+	if _, err := s.Stop(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ? AND id <> 'key-tablet'`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if keys := w.keys[acc.EnvironmentID]; len(keys) != 1 || keys[0] != "ssh-ed25519 AAAAtablet" {
+		t.Fatalf("keys after removing a key = %q", keys)
+	}
+
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("start with no keys: err = %v", err)
 	}
 }

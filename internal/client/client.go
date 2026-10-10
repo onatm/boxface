@@ -186,9 +186,10 @@ func (c *Client) Delete(ctx context.Context, idempotencyKey, id string, purge bo
 }
 
 type Connection struct {
-	EnvironmentID string `json:"environment_id"`
-	User          string `json:"user"`
-	HostKey       string `json:"host_key"`
+	EnvironmentID string   `json:"environment_id"`
+	User          string   `json:"user"`
+	HostKey       string   `json:"host_key"`
+	Fingerprints  []string `json:"key_fingerprints"`
 }
 
 func (c *Client) Connection(ctx context.Context, id string) (Connection, error) {

@@ -21,7 +21,22 @@ import (
 const (
 	readyPort        = 1024
 	memoryOverheadMi = 256
+	keysImage        = "authorized_keys.img"
 )
+
+func keysImageContent(keys []string) ([]byte, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("no authorized keys for the VM")
+	}
+	for _, k := range keys {
+		if k == "" || strings.ContainsAny(k, "\r\n\x00") {
+			return nil, errors.New("authorized key must be a single non-empty line")
+		}
+	}
+	content := []byte(strings.Join(keys, "\n") + "\n")
+	size := (len(content) + 4095) / 4096 * 4096
+	return append(content, make([]byte, size-len(content))...), nil
+}
 
 func unitName(environmentID string) string { return "boxface-vm-" + environmentID + ".service" }
 
@@ -62,6 +77,7 @@ func (h *Host) firecrackerConfig(spec lifecycle.VMSpec, a addressing) ([]byte, e
 		"drives": []drive{
 			{"rootfs", filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"), true, true},
 			{"data", h.diskPath(spec.DiskID), false, false},
+			{"keys", filepath.Join(dir, keysImage), false, true},
 		},
 		"machine-config": map[string]any{"vcpu_count": spec.VCPUs, "mem_size_mib": spec.MemoryMiB},
 		"network-interfaces": []map[string]any{{
@@ -107,6 +123,19 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "firecracker.json"), config, 0o644); err != nil {
+		return err
+	}
+	keys, err := keysImageContent(spec.AuthorizedKeys)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, keysImage+".tmp"), keys, 0o640); err != nil {
+		return err
+	}
+	if err := os.Chown(filepath.Join(dir, keysImage+".tmp"), h.vmUID, h.vmGID); err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(dir, keysImage+".tmp"), filepath.Join(dir, keysImage)); err != nil {
 		return err
 	}
 	for _, name := range []string{"ready", "api.sock", "vsock.sock"} {

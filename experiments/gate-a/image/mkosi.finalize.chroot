@@ -13,6 +13,6 @@ if grep -qE '^AcceptEnv.*(LANG|LC_)' /etc/ssh/sshd_config; then echo "sshd still
 rm -f /etc/resolv.conf
 echo 'nameserver 1.1.1.1' > /etc/resolv.conf
 
-systemctl enable systemd-networkd.service boxface-data.service boxface-ready.service
+systemctl enable systemd-networkd.service boxface-data.service boxface-keys.service boxface-ready.service
 systemctl mask docker.service docker.socket containerd.service
 systemctl --global enable docker.service

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 )
 
 const (
@@ -56,7 +57,18 @@ func (s *Server) connection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"environment_id": env.ID, "user": guestUser, "host_key": key})
+	keys, err := s.Lifecycle.StartedKeys(r.Context(), owner(r), env.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	fingerprints := []string{}
+	for _, k := range keys {
+		if _, fp, err := sshkeys.Parse(k); err == nil {
+			fingerprints = append(fingerprints, fp)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"environment_id": env.ID, "user": guestUser, "host_key": key, "key_fingerprints": fingerprints})
 }
 
 func (s *Server) sshTunnel(w http.ResponseWriter, r *http.Request) {

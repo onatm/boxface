@@ -46,6 +46,7 @@ Enforcement includes a read-only root device, a read-only package store/profile,
 
 - One Boxface owner maps to a fixed guest user, initially `dev` with a stable UID/GID. Each environment has its own disk, so the same guest UID across environments is not a shared filesystem identity. Multi-user guests are out of scope.
 - Persist guest SSH host identity outside the reusable image. Generate it per environment on first initialisation.
+- `boxface-keys.service` copies the owner's SSH keys from the read-only keys drive (`/dev/vdc`) to `/run/boxface/authorized_keys` before `ssh` starts; `sshd` reads that file and then `~/.ssh/authorized_keys`, so keys the user adds inside the environment still work. Images without this unit accept only the keys a disk was created with, as before.
 - Never bake shared host keys, machine IDs, or credentials into a base image. Seed first-boot metadata through a controlled worker-to-guest channel.
 
 ### PATH and Agent Runtimes
