@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 
 	"github.com/onatm/boxface/internal/lifecycle"
 )
@@ -16,6 +18,16 @@ import (
 type Backend interface {
 	lifecycle.Worker
 	Inventory(ctx context.Context) (Inventory, error)
+	Endpoint(ctx context.Context, environmentID string) (netip.Addr, error)
+	HostKey(ctx context.Context, diskID string) (string, error)
+}
+
+type endpointResponse struct {
+	Address netip.Addr `json:"address"`
+}
+
+type hostKeyResponse struct {
+	HostKey string `json:"host_key"`
 }
 
 type idRequest struct {
@@ -65,13 +77,24 @@ func NewHandler(b Backend) http.Handler {
 	})
 	handle("POST /v1/vms/stop", byID(b.StopVM))
 	handle("POST /v1/vms/wait-ready", byID(b.WaitReady))
-	mux.HandleFunc("GET /v1/inventory", func(w http.ResponseWriter, r *http.Request) {
-		inv, err := b.Inventory(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, inv)
+	get := func(pattern string, call func(r *http.Request) (any, error)) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			v, err := call(r)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+		})
+	}
+	get("GET /v1/inventory", func(r *http.Request) (any, error) { return b.Inventory(r.Context()) })
+	get("GET /v1/environments/{id}/endpoint", func(r *http.Request) (any, error) {
+		addr, err := b.Endpoint(r.Context(), r.PathValue("id"))
+		return endpointResponse{addr}, err
+	})
+	get("GET /v1/disks/{id}/host-key", func(r *http.Request) (any, error) {
+		key, err := b.HostKey(r.Context(), r.PathValue("id"))
+		return hostKeyResponse{key}, err
 	})
 	return mux
 }
@@ -184,6 +207,18 @@ func (c *Client) Inventory(ctx context.Context) (Inventory, error) {
 	var inv Inventory
 	err := c.do(ctx, http.MethodGet, "/v1/inventory", nil, &inv)
 	return inv, err
+}
+
+func (c *Client) Endpoint(ctx context.Context, environmentID string) (netip.Addr, error) {
+	var resp endpointResponse
+	err := c.do(ctx, http.MethodGet, "/v1/environments/"+url.PathEscape(environmentID)+"/endpoint", nil, &resp)
+	return resp.Address, err
+}
+
+func (c *Client) HostKey(ctx context.Context, diskID string) (string, error) {
+	var resp hostKeyResponse
+	err := c.do(ctx, http.MethodGet, "/v1/disks/"+url.PathEscape(diskID)+"/host-key", nil, &resp)
+	return resp.HostKey, err
 }
 
 func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {

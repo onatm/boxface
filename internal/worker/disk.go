@@ -51,6 +51,28 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 	if err := os.Chmod(filepath.Join(seed, "home"), 0o700); err != nil {
 		return err
 	}
+	hostKeyDir := filepath.Join(seed, "boxface", "ssh")
+	if err := os.MkdirAll(hostKeyDir, 0o700); err != nil {
+		return err
+	}
+	hostKey := filepath.Join(hostKeyDir, "ssh_host_ed25519_key")
+	if _, err := run(ctx, "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", hostKey); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Join(seed, "boxface"), 0o755); err != nil {
+		return err
+	}
+	hostKeyPub, err := os.ReadFile(hostKey + ".pub")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(hostKey + ".pub"); err != nil {
+		return err
+	}
+	pubPath := h.hostKeyPath(spec.DiskID)
+	if err := os.WriteFile(pubPath+".tmp", hostKeyPub, 0o644); err != nil {
+		return err
+	}
 
 	tmp := path + ".tmp"
 	os.Remove(tmp)
@@ -71,7 +93,25 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 		os.Remove(tmp)
 		return err
 	}
+	if err := os.Rename(pubPath+".tmp", pubPath); err != nil {
+		os.Remove(tmp)
+		return err
+	}
 	return os.Rename(tmp, path)
+}
+
+func (h *Host) HostKey(ctx context.Context, diskID string) (string, error) {
+	if err := validID(diskID); err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(h.hostKeyPath(diskID))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("disk %s has no recorded host key; recreate the environment", diskID)
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 func (h *Host) RemoveDisk(ctx context.Context, diskID string) error {
@@ -79,7 +119,7 @@ func (h *Host) RemoveDisk(ctx context.Context, diskID string) error {
 		return err
 	}
 	path := h.diskPath(diskID)
-	for _, p := range []string{path + ".tmp", path} {
+	for _, p := range []string{path + ".tmp", path, h.hostKeyPath(diskID) + ".tmp", h.hostKeyPath(diskID)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

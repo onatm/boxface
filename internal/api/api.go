@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -26,6 +27,8 @@ type Server struct {
 	Lifecycle     *lifecycle.Service
 	Images        *images.Registry
 	SSHKeys       *sshkeys.Store
+	Gateway       Gateway
+	DialGuest     func(ctx context.Context, address string) (net.Conn, error)
 	Capacity      lifecycle.Capacity
 	PollInterval  time.Duration
 	LoginFailures int
@@ -51,6 +54,9 @@ func (s *Server) Handler() http.Handler {
 	if s.LoginWindow == 0 {
 		s.LoginWindow = 10 * time.Minute
 	}
+	if s.DialGuest == nil {
+		s.DialGuest = dialGuest
+	}
 	s.limiter = newLoginLimiter(s.LoginFailures, s.LoginWindow)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -75,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /v1/environments/{id}/start", s.startEnvironment)
 	authed("POST /v1/environments/{id}/stop", s.stopEnvironment)
 	authed("DELETE /v1/environments/{id}", s.deleteEnvironment)
+	authed("GET /v1/environments/{id}/connection", s.connection)
+	authed("GET /v1/environments/{id}/ssh", s.sshTunnel)
 	authed("GET /v1/operations/{id}", s.getOperation)
 	authed("GET /v1/operations/{id}/events", s.operationEvents)
 	return mux
@@ -419,6 +427,8 @@ func writeError(w http.ResponseWriter, err error) {
 		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},
 		{lifecycle.ErrIdempotencyConflict, http.StatusConflict, "idempotency_conflict"},
 		{lifecycle.ErrCapacity, http.StatusConflict, "capacity_exceeded"},
+		{errNotRunning, http.StatusConflict, "environment_not_running"},
+		{errGuestUnreachable, http.StatusBadGateway, "guest_unreachable"},
 	} {
 		if errors.Is(err, m.err) {
 			status, code = m.status, m.code

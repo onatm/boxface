@@ -174,6 +174,13 @@ func (r *recordingBackend) Inventory(context.Context) (Inventory, error) {
 	return Inventory{Environments: []EnvironmentResources{{EnvironmentID: "env-a", VM: true}}, Disks: []string{"disk-a"}}, r.fail
 }
 
+func (r *recordingBackend) Endpoint(_ context.Context, id string) (netip.Addr, error) {
+	return netip.MustParseAddr("172.20.0.6"), r.record("Endpoint " + id)
+}
+func (r *recordingBackend) HostKey(_ context.Context, id string) (string, error) {
+	return "ssh-ed25519 AAAA", r.record("HostKey " + id)
+}
+
 func serve(t *testing.T, b Backend) *Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "bfx")
@@ -218,6 +225,19 @@ func TestClientRoundTrip(t *testing.T) {
 	inv, err := c.Inventory(ctx)
 	if err != nil || len(inv.Environments) != 1 || !inv.Environments[0].VM || inv.Disks[0] != "disk-a" {
 		t.Fatalf("inventory = %+v, %v", inv, err)
+	}
+	if addr, err := c.Endpoint(ctx, "env-a"); err != nil || addr != netip.MustParseAddr("172.20.0.6") {
+		t.Fatalf("endpoint = %v, %v", addr, err)
+	}
+	if key, err := c.HostKey(ctx, "disk-a"); err != nil || key != "ssh-ed25519 AAAA" {
+		t.Fatalf("host key = %q, %v", key, err)
+	}
+	if got := strings.Join(b.calls[len(b.calls)-2:], ","); got != "Endpoint env-a,HostKey disk-a" {
+		t.Fatalf("calls = %s", got)
+	}
+	b.fail = errors.New("environment env-a VM is not running")
+	if _, err := c.Endpoint(ctx, "env-a"); err == nil || err.Error() != b.fail.Error() {
+		t.Fatalf("endpoint err = %v", err)
 	}
 }
 

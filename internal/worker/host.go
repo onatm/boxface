@@ -81,6 +81,9 @@ func (h *Host) envDir(id string) string { return filepath.Join(h.environmentsDir
 func (h *Host) diskPath(id string) string {
 	return filepath.Join(h.disksDir(), id+".ext4")
 }
+func (h *Host) hostKeyPath(id string) string {
+	return filepath.Join(h.disksDir(), id+".host_key.pub")
+}
 
 func validID(id string) error {
 	if id == "" || len(id) > 64 || strings.Trim(id, "0123456789abcdefghijklmnopqrstuvwxyz-") != "" {

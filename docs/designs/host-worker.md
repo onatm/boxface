@@ -26,6 +26,8 @@ The host worker performs the narrow set of privileged host operations Boxface ne
 - The worker runs as root as `boxface-worker` and holds no database. Its systemd unit is `Type=notify`: it reports ready only once its socket is listening, so the API, ordered after it, can reconcile at startup. It accepts validated identifiers and structured specifications from the API as JSON over HTTP on a Unix socket readable only by the `boxface` group, and checks the caller's UID with `SO_PEERCRED`.
 - Every call creates or removes one resource idempotently: repeating a call that already took effect changes nothing.
 - A disk is seeded with the SSH public keys passed in its specification, one validated line each; the worker reads no key file from the host.
+- The worker generates the guest's ed25519 SSH host key when it creates the disk, seeds it into `/boxface/ssh/` on the disk (which the guest's data setup reuses), and keeps the public half at `disks/<id>.host_key.pub` so clients can pin it before the first connection. Removing the disk removes it.
+- `GET /v1/environments/{id}/endpoint` returns a running VM's guest address and fails for a stopped one; `GET /v1/disks/{id}/host-key` returns the pinned public host key. The API uses them for the SSH tunnel and dials only port 22.
 - It never runs shell strings supplied by clients; `exec` arguments travel as an argument array (see [boxfacectl](./cli.md)).
 - The hypervisor runtime sits behind a narrow interface. Firecracker is the first candidate; Cloud Hypervisor is the fallback. Implement one backend first.
 

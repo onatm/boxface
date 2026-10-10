@@ -1,0 +1,1 @@
+ALTER TABLE auth_events ADD COLUMN target_id TEXT NOT NULL DEFAULT '';

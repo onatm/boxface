@@ -132,6 +132,12 @@ func (s *Store) event(ctx context.Context, tx *sql.Tx, ownerID, action, tokenID,
 	return err
 }
 
+func (s *Store) Record(ctx context.Context, ownerID, action, tokenID, targetID, remote string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO auth_events (owner_id, action, token_id, target_id, remote, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		ownerID, action, tokenID, targetID, remote, s.timestamp())
+	return err
+}
+
 func (s *Store) Authenticate(ctx context.Context, token string) (ownerID, tokenID string, err error) {
 	var lastUsed sql.NullString
 	err = s.db.QueryRowContext(ctx, `SELECT owner_id, id, last_used_at FROM api_tokens WHERE hash = ? AND revoked_at IS NULL`, hash(token)).

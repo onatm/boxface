@@ -45,7 +45,8 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | `POST /v1/environments/{id}/start` | Start retained environment. *Implemented* |
 | `POST /v1/environments/{id}/stop` | Graceful shutdown. *Implemented* |
 | `DELETE /v1/environments/{id}` | Remove environment; preserve data unless `?purge=true`. *Implemented* |
-| `POST /v1/environments/{id}/connections` | Obtain authorised SSH connection information |
+| `GET /v1/environments/{id}/connection` | SSH connection information: `{"environment_id", "user", "host_key"}`, the pinned public host key generated with the disk. Refused for a deleted environment. *Implemented* |
+| `GET /v1/environments/{id}/ssh` | SSH tunnel: with `Connection: Upgrade` and `Upgrade: boxface-ssh` over HTTP/1.1, returns `101` and splices the connection to port 22 of the owned environment's guest. Only a `running` environment is dialed; the worker supplies the address and the API never dials another port. Each tunnel is recorded as `environment.connect`. *Implemented* |
 | `POST /v1/environments/{id}/sessions` | Start named user session |
 | `GET /v1/environments/{id}/sessions` | List sessions |
 | `POST /v1/environments/{id}/backups` | Back up stopped data disk |
@@ -57,7 +58,7 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 Long-running mutations return `202 Accepted` with `operation_id` and `environment_id`, and a `Location` header for the operation. The `Idempotency-Key` header carries the idempotency key. Idempotency and serialization rules are in [Operations](./operations.md#interfaces--contracts).
 
 - Request bodies with unknown fields are rejected.
-- Errors are `{"error": {"code", "message", "retryable"}}`. Codes: `unauthorized` (401), `invalid_request` (400), `not_found` (404), and with 409 `name_taken`, `environment_deleted`, `image_not_ready`, `idempotency_conflict`, `capacity_exceeded`. Other failures return `internal_error` (500) without internal detail.
+- Errors are `{"error": {"code", "message", "retryable"}}`. Codes: `unauthorized` (401), `invalid_request` (400), `not_found` (404), and with 409 `name_taken`, `environment_deleted`, `image_not_ready`, `idempotency_conflict`, `capacity_exceeded`, `environment_not_running`; `guest_unreachable` (502, retryable) when the guest's SSH port does not answer. Other failures return `internal_error` (500) without internal detail.
 - Operation events are server-sent events: one `step` event per completed step with IDs from 1, then a final `state` event carrying the operation. A client reconnecting with `Last-Event-ID` receives only later events.
 - Capacity limits on environments, vCPUs, memory, and disk count every environment that is not deleted, whether running or stopped; the disk limit also counts retained disks.
 
@@ -71,7 +72,7 @@ Long-running mutations return `202 Accepted` with `operation_id` and `environmen
 ### Authentication
 
 - `boxface-api bootstrap -owner NAME`, run on the host as the `boxface` user, creates the owner if needed and prints a one-time login code valid for 15 minutes. `POST /v1/login` exchanges it once for an API token.
-- Codes and tokens are stored only as SHA-256 hashes; there is no default password. `DELETE /v1/tokens/{id}` revokes one token; `boxface-api revoke -owner NAME` revokes all of an owner's tokens. Logins and revocations are recorded with the client address in `auth_events`.
+- Codes and tokens are stored only as SHA-256 hashes; there is no default password. `DELETE /v1/tokens/{id}` revokes one token; `boxface-api revoke -owner NAME` revokes all of an owner's tokens. Logins, revocations, and SSH tunnel opens are recorded with the client address in `auth_events`.
 - After 10 failed logins from one address in 10 minutes, `POST /v1/login` returns `429 rate_limited` (retryable, with `Retry-After`) for that address until the window ends.
 - Listeners, any combination: `-listen` (plain HTTP, default `127.0.0.1:7443`, empty disables it); `-tls-listen` with `-tls-domain` (Let's Encrypt over TLS-ALPN-01, so port 443, cached in `-acme-dir`) or `-tls-cert` and `-tls-key`; `-tailscale-socket`, a Unix socket (mode 0600) for `tailscale serve`. Every listener has header and idle timeouts. `X-Forwarded-For` is trusted only on the Tailscale socket, whose proxy is `tailscaled`; it gives the client address for rate limiting and audit.
 - Browser access uses an authenticated secure session and CSRF protection.
@@ -85,7 +86,7 @@ Use SQLite transactions for local metadata.
 | --- | --- |
 | Owner | ID, authentication records, permitted bindings, create defaults |
 | API token | ID, owner, SHA-256 hash, client name, creation, last use, revocation |
-| Auth event | Owner, action (`login`, `token.revoke`), token ID, client address, time |
+| Auth event | Owner, action (`login`, `token.revoke`, `environment.connect`), token ID, target environment for connects, client address, time |
 | SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
 | Image alias | Name, image ID; repointing never changes existing environments |
 | Recipe revision | ID, source YAML, canonical spec, parent/name, creation time |

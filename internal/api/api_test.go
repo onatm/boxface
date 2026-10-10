@@ -3,10 +3,14 @@ package api
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,8 +39,19 @@ func (noopWorker) StartVM(context.Context, lifecycle.VMSpec) error      { return
 func (noopWorker) StopVM(context.Context, string) error                 { return nil }
 func (noopWorker) WaitReady(context.Context, string) error              { return nil }
 
+type fakeGateway struct{}
+
+func (fakeGateway) Endpoint(_ context.Context, id string) (netip.Addr, error) {
+	return netip.MustParseAddr("172.20.0.6"), nil
+}
+func (fakeGateway) HostKey(_ context.Context, diskID string) (string, error) {
+	return "ssh-ed25519 AAAAhost", nil
+}
+
 type env struct {
 	t         *testing.T
+	db        *sql.DB
+	dialed    chan string
 	srv       *httptest.Server
 	authStore *auth.Store
 	runner    *lifecycle.Runner
@@ -63,13 +78,21 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, importDir, imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
+		Gateway:      fakeGateway{},
 		Capacity:     capacity,
 		PollInterval: 10 * time.Millisecond,
+	}
+	dialed := make(chan string, 10)
+	s.DialGuest = func(_ context.Context, address string) (net.Conn, error) {
+		dialed <- address
+		guest, client := net.Pipe()
+		go func() { io.Copy(guest, guest); guest.Close() }()
+		return client, nil
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
 
-	e := &env{t: t, srv: srv, authStore: authStore, runner: runner, tokens: map[string]string{}}
+	e := &env{t: t, db: db, dialed: dialed, srv: srv, authStore: authStore, runner: runner, tokens: map[string]string{}}
 	e.stage = func(name string) {
 		os.MkdirAll(filepath.Join(importDir, name), 0o755)
 		os.WriteFile(filepath.Join(importDir, name, "vmlinux"), []byte("kernel "+name), 0o644)
@@ -404,5 +427,97 @@ func TestFailedLoginsAreRateLimited(t *testing.T) {
 	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code}, http.StatusTooManyRequests, &resp429)
 	if resp429.Error.Code != "rate_limited" || !resp429.Error.Retryable {
 		t.Fatalf("error = %+v", resp429.Error)
+	}
+}
+
+func (e *env) tunnel(who, environmentID string, header string) (*http.Response, net.Conn, *bufio.Reader) {
+	e.t.Helper()
+	conn, err := net.Dial("tcp", e.srv.Listener.Addr().String())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() { conn.Close() })
+	fmt.Fprintf(conn, "GET /v1/environments/%s/ssh HTTP/1.1\r\nHost: boxface\r\nAuthorization: Bearer %s\r\n%s\r\n", environmentID, e.tokens[who], header)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resp, conn, br
+}
+
+const upgradeHeader = "Connection: Upgrade\r\nUpgrade: boxface-ssh\r\n"
+
+func TestConnectionAndSSHTunnel(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	var acc lifecycle.Accepted
+	e.do("one", http.MethodPost, "/v1/environments", e.createRequest("travel"), http.StatusAccepted, &acc)
+	e.runner.Wait()
+
+	var conn map[string]string
+	e.do("one", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusOK, &conn)
+	if conn["user"] != "dev" || conn["host_key"] != "ssh-ed25519 AAAAhost" || conn["environment_id"] != acc.EnvironmentID {
+		t.Fatalf("connection = %+v", conn)
+	}
+	e.errorCode("two", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusNotFound)
+
+	resp, c, br := e.tunnel("one", acc.EnvironmentID, upgradeHeader)
+	if resp.StatusCode != http.StatusSwitchingProtocols || resp.Header.Get("Upgrade") != "boxface-ssh" {
+		t.Fatalf("status %d, header %v", resp.StatusCode, resp.Header)
+	}
+	if got := <-e.dialed; got != "172.20.0.6:22" {
+		t.Fatalf("dialed %s", got)
+	}
+	io.WriteString(c, "SSH-2.0-test\r\n")
+	line, err := br.ReadString('\n')
+	if err != nil || line != "SSH-2.0-test\r\n" {
+		t.Fatalf("echo = %q, %v", line, err)
+	}
+	var events int
+	e.db.QueryRow(`SELECT count(*) FROM auth_events WHERE action = 'environment.connect' AND target_id = ?`, acc.EnvironmentID).Scan(&events)
+	if events != 1 {
+		t.Fatalf("connect events = %d", events)
+	}
+
+	for name, tc := range map[string]struct {
+		who, header string
+		status      int
+		code        string
+	}{
+		"another owner":     {"two", upgradeHeader, http.StatusNotFound, "not_found"},
+		"no upgrade header": {"one", "", http.StatusBadRequest, "invalid_request"},
+		"wrong protocol":    {"one", "Connection: Upgrade\r\nUpgrade: websocket\r\n", http.StatusBadRequest, "invalid_request"},
+	} {
+		resp, _, _ := e.tunnel(tc.who, acc.EnvironmentID, tc.header)
+		var body struct {
+			Error apiError `json:"error"`
+		}
+		json.NewDecoder(resp.Body).Decode(&body)
+		if resp.StatusCode != tc.status || body.Error.Code != tc.code {
+			t.Fatalf("%s: status %d, error %+v", name, resp.StatusCode, body.Error)
+		}
+	}
+
+	e.do("one", http.MethodPost, "/v1/environments/"+acc.EnvironmentID+"/stop", nil, http.StatusAccepted, nil)
+	e.runner.Wait()
+	resp, _, _ = e.tunnel("one", acc.EnvironmentID, upgradeHeader)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stopped: status %d", resp.StatusCode)
+	}
+	e.do("one", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusOK, nil)
+
+	e.do("one", http.MethodDelete, "/v1/environments/"+acc.EnvironmentID, nil, http.StatusAccepted, nil)
+	e.runner.Wait()
+	resp, _, _ = e.tunnel("one", acc.EnvironmentID, upgradeHeader)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("deleted: status %d", resp.StatusCode)
+	}
+	if code := e.errorCode("one", http.MethodGet, "/v1/environments/"+acc.EnvironmentID+"/connection", nil, http.StatusConflict); code != "environment_deleted" {
+		t.Fatalf("deleted connection: code = %s", code)
+	}
+	select {
+	case got := <-e.dialed:
+		t.Fatalf("refused tunnel dialed %s", got)
+	default:
 	}
 }

@@ -140,6 +140,22 @@ func (h *Host) RemoveNetwork(ctx context.Context, environmentID string) error {
 	return os.RemoveAll(h.envDir(environmentID))
 }
 
+func (h *Host) Endpoint(ctx context.Context, environmentID string) (netip.Addr, error) {
+	if err := validID(environmentID); err != nil {
+		return netip.Addr{}, err
+	}
+	if active, err := unitActive(ctx, unitName(environmentID)); err != nil {
+		return netip.Addr{}, err
+	} else if !active {
+		return netip.Addr{}, fmt.Errorf("environment %s VM is not running", environmentID)
+	}
+	a, err := h.readAddressing(environmentID)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("environment %s network: %w", environmentID, err)
+	}
+	return a.Guest, nil
+}
+
 func (h *Host) firewallRuleset() string {
 	return fmt.Sprintf(`table inet boxface
 delete table inet boxface

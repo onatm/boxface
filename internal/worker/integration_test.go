@@ -168,6 +168,22 @@ func TestIntegrationLifecycle(t *testing.T) {
 	if a.Guest == b.Guest {
 		t.Fatalf("both guests got %s", a.Guest)
 	}
+	endpoint, err := h.Endpoint(ctx, ids[0])
+	if err != nil || endpoint != a.Guest {
+		t.Fatalf("endpoint = %s, %v; want %s", endpoint, err, a.Guest)
+	}
+	hostKey, err := h.HostKey(ctx, specs[ids[0]].DiskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownHosts := filepath.Join(cfg.StateDir, "known_hosts")
+	if err := os.WriteFile(knownHosts, []byte(endpoint.String()+" "+hostKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("ssh", "-i", filepath.Join(cfg.StateDir, "key"), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=10", "dev@"+endpoint.String(), "true").CombinedOutput(); err != nil {
+		t.Fatalf("ssh with the pinned host key: %v: %s", err, out)
+	}
 	if _, err := guestSSH(cfg, a.Guest, "curl -fsS -m 15 -o /dev/null https://deb.debian.org"); err != nil {
 		t.Fatalf("guest cannot reach the internet: %v", err)
 	}
@@ -203,6 +219,9 @@ func TestIntegrationLifecycle(t *testing.T) {
 			}
 		}
 		t.Logf("%s: stopped in %s", id, time.Since(stopped).Round(time.Millisecond))
+		if _, err := h.Endpoint(ctx, id); err == nil {
+			t.Fatalf("Endpoint %s succeeded for a stopped VM", id)
+		}
 		for i := 0; i < 2; i++ {
 			if err := h.RemoveNetwork(ctx, id); err != nil {
 				t.Fatalf("RemoveNetwork %s (call %d): %v", id, i+1, err)
@@ -227,6 +246,9 @@ func TestIntegrationLifecycle(t *testing.T) {
 	}
 	if len(inv.Disks) != 0 {
 		t.Fatalf("disks left: %v", inv.Disks)
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(h.disksDir(), "*")); len(leftovers) != 0 {
+		t.Fatalf("disk files left: %v", leftovers)
 	}
 }
 

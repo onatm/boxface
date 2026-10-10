@@ -91,6 +91,7 @@ func serve(args []string) error {
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, *importDir, *imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
+		Gateway:      client,
 		Capacity:     capacity,
 		PollInterval: 500 * time.Millisecond,
 	}
