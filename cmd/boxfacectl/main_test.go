@@ -68,6 +68,7 @@ type harness struct {
 	worker    *gatedWorker
 	runner    *lifecycle.Runner
 	sshCalls  [][]string
+	portBusy  bool
 }
 
 func newHarness(t *testing.T) *harness {
@@ -127,6 +128,7 @@ func (h *harness) run(ctx context.Context, stdin string, interactive bool, args 
 			h.sshCalls = append(h.sshCalls, append(args, env...))
 			return nil
 		},
+		portFree: func(int) bool { return !h.portBusy },
 	}
 	code := c.run(ctx, args)
 	return code, stdout.String(), stderr.String()
@@ -310,7 +312,7 @@ func TestConnectStartsStoppedEnvironmentAndPinsHostKey(t *testing.T) {
 		"HostKeyAlias=" + env.ID,
 		" tunnel " + env.ID,
 		"ServerAliveInterval=15",
-		"-t dev@travel tmux new-session -A -s main",
+		"-L localhost:1455:localhost:1455 -t dev@travel tmux new-session -A -s main",
 		"BOXFACE_CONFIG=" + h.config,
 	} {
 		if !strings.Contains(args, want) {
@@ -329,6 +331,21 @@ func TestConnectStartsStoppedEnvironmentAndPinsHostKey(t *testing.T) {
 	}
 	if code, _, _ := h.run(context.Background(), "", false, "connect", "travel", "--session", "a b"); code != exitUsage {
 		t.Fatalf("bad session name: exit %d", code)
+	}
+	h.ok("connect", "travel", "--forward", "1455", "--forward", "8080:3000")
+	if args := strings.Join(h.sshCalls[len(h.sshCalls)-1], " "); !strings.Contains(args, "-L localhost:1455:localhost:1455 -L localhost:8080:localhost:3000 -t dev@travel") || strings.Count(args, ":1455") != 2 {
+		t.Fatalf("forward args = %s", args)
+	}
+	h.portBusy = true
+	code, _, errOut = h.run(context.Background(), "", false, "connect", "travel")
+	if args := strings.Join(h.sshCalls[len(h.sshCalls)-1], " "); code != exitOK || strings.Contains(args, "-L") || !strings.Contains(errOut, "localhost:1455 is in use") {
+		t.Fatalf("busy callback port: exit %d, args %s, %s", code, args, errOut)
+	}
+	h.portBusy = false
+	for _, bad := range []string{"0", "70000", "x", "1455:", "a:b"} {
+		if code, _, _ := h.run(context.Background(), "", false, "connect", "travel", "--forward", bad); code != exitUsage {
+			t.Fatalf("--forward %s: exit %d", bad, code)
+		}
 	}
 }
 

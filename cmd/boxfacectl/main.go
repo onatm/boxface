@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -35,7 +37,7 @@ commands:
   image import SOURCE [--alias NAME]
   image list
   create NAME [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
-  connect NAME [--session NAME]
+  connect NAME [--session NAME] [--forward PORT[:GUESTPORT]]...
   list
   inspect NAME
   start NAME [--no-wait]
@@ -67,6 +69,7 @@ type cli struct {
 	json        bool
 	newKey      func() string
 	ssh         func(args, env []string) error
+	portFree    func(port int) bool
 }
 
 func main() {
@@ -80,8 +83,18 @@ func main() {
 		configPath:  defaultConfigPath(),
 		newKey:      randomKey,
 		ssh:         runSSH,
+		portFree:    portFree,
 	}
 	os.Exit(c.run(ctx, os.Args[1:]))
+}
+
+func portFree(port int) bool {
+	l, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	l.Close()
+	return true
 }
 
 func runSSH(args, env []string) error {
@@ -591,6 +604,12 @@ func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Acce
 func (c *cli) connect(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	session := fs.String("session", "main", "tmux session to create or attach to")
+	var forwards []string
+	fs.Func("forward", "forward localhost:PORT on this machine to localhost:GUESTPORT in the environment, as PORT or PORT:GUESTPORT; repeatable", func(v string) error {
+		f, err := forwardSpec(v)
+		forwards = append(forwards, f)
+		return err
+	})
 	rest, err := parse(fs, args)
 	if err != nil || len(rest) != 1 || !sessionPattern.MatchString(*session) {
 		return errUsage
@@ -644,9 +663,22 @@ func (c *cli) connect(ctx context.Context, args []string) error {
 		"-o", "ProxyCommand=" + shellQuote(self) + " tunnel " + env.ID,
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=4",
-		"-t", conn.User + "@" + env.Name,
-		"tmux", "new-session", "-A", "-s", *session,
 	}
+	for _, port := range loginCallbackPorts {
+		f := fmt.Sprintf("localhost:%d:localhost:%d", port, port)
+		if slices.Contains(forwards, f) {
+			continue
+		}
+		if c.portFree(port) {
+			forwards = append(forwards, f)
+		} else {
+			fmt.Fprintf(c.stderr, "localhost:%d is in use here, so agent sign-ins that redirect to it will not reach %s\n", port, env.Name)
+		}
+	}
+	for _, f := range forwards {
+		sshArgs = append(sshArgs, "-L", f)
+	}
+	sshArgs = append(sshArgs, "-t", conn.User+"@"+env.Name, "tmux", "new-session", "-A", "-s", *session)
 	err = c.ssh(sshArgs, []string{"BOXFACE_CONFIG=" + c.configPath})
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 255 {
@@ -656,6 +688,22 @@ func (c *cli) connect(ctx context.Context, args []string) error {
 }
 
 var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+var loginCallbackPorts = []int{1455}
+
+func forwardSpec(v string) (string, error) {
+	local, guest, found := strings.Cut(v, ":")
+	if !found {
+		guest = local
+	}
+	for _, p := range []string{local, guest} {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid port %q in --forward %s", p, v)
+		}
+	}
+	return "localhost:" + local + ":localhost:" + guest, nil
+}
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

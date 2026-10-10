@@ -70,7 +70,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Success signal:** Tablet disconnects do not terminate running sessions; project work stays remote and recoverable; Claude Code, Codex, OpenCode, and Pi each complete a small real task with a supported authentication mode.
 - **Dependencies:** Durable server lifecycle (complete).
 - **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Devices that log in after an environment started need one restart before they can connect ([resolved open question](./plans/2026-10-connect-and-web-ui.md#open-questions)).
-- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). Remaining: the agent tasks in the success signal, which need credential delivery.
+- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). All four agents signed in with subscriptions inside an environment and completed a small task, and their logins survived a restart ([agent authentication](./research/2026-10-agent-auth.md)). Remaining before exit: the same workflow from the tablet itself, on a real repository. Agent logins are per environment; a built-in secret store (Go CDK `secrets`, decided) moves to Usable configuration and operations.
 - **Confidence:** Medium.
 - **Owner:** onatm
 - **Advance / completion criteria:** The plan's acceptance scenarios pass on the droplet, and the success signal holds.
@@ -81,7 +81,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
-- **Candidate bets:** The rest of the [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
+- **Candidate bets:** A built-in secret store for agent credentials so environments need no per-environment sign-in ([Credential Broker](./designs/credential-broker.md#storage)), the rest of the [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
 - **Confidence:** Medium.
@@ -186,6 +186,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | 2026-10-09 | Chose Go as the implementation language | Owner decision; the lifecycle plan is the remaining first deliverable | onatm |
 | 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
 | 2026-10-10 | Connect plan C0–C7 done; daily terminal workflow stays in Now for agent credentials; keys now apply at each start | [Connect results](./research/2026-10-connect.md) | onatm |
+| 2026-10-10 | Validated subscription sign-in for all four agents inside environments; decided built-in secret storage with Go CDK `secrets`, OpenBao and 1Password as later providers; daily terminal workflow waits on a tablet run | [Agent authentication](./research/2026-10-agent-auth.md); owner decision | onatm |
 
 ## Linked Documents
 

@@ -1,12 +1,12 @@
 # Credential Broker
 
-**Status:** Draft — proposed design
+**Status:** Draft — storage decided (built-in, open-source encryption library, providers later); delivery proposed
 
 ---
 
 ## Overview
 
-The credential broker resolves server-approved secret bindings at launch time and delivers only the selected values or capabilities to the correct environment and session. The first external adapter uses server-side 1Password CLI/service-account access.
+The credential broker resolves server-approved secret bindings at launch time and delivers only the selected values or capabilities to the correct environment and session. Secrets are stored by Boxface itself, encrypted with an open-source library, so a host needs no external secret service; 1Password (validated in [Gate C](../research/2026-10-gate-c.md)) and OpenBao are later providers.
 
 ## Context & Problem
 
@@ -27,6 +27,18 @@ The credential broker resolves server-approved secret bindings at launch time an
 - A binding maps a server-approved provider reference to an owner, consumer, delivery mode, and scope.
 - The broker must not accept arbitrary vault references directly from untrusted guest requests. A guest cannot choose arbitrary destination environments or expand its own bindings.
 
+### Storage
+
+Decided by the owner on 2026-10-10: built in, using an open-source secret store rather than Boxface's own cryptography, with external providers later.
+
+| Option | License | Verdict |
+|---|---|---|
+| **Go CDK `secrets` (`gocloud.dev/secrets`)** | Apache-2.0 | **Chosen.** Envelope encryption inside `boxface-api`, ciphertext in SQLite. The keeper is a URL: `base64key://` (a host key file readable only by `boxface`) for self-hosted installs, and AWS KMS, GCP KMS, Azure Key Vault, or Vault/OpenBao Transit for a hosted version, with no change to stored records beyond re-wrapping. No new service to run on a single host |
+| OpenBao | MPL-2.0 | Later provider. A Linux Foundation fork of Vault: single binary, Raft or PostgreSQL storage, KMS auto-unseal plugins, and per-tenant namespace sealing (v2.6–2.7), which suits a multi-tenant hosted version; requiring it would add a service to run and unseal after every reboot |
+| Infisical | MIT core | Not chosen: needs PostgreSQL and Redis, with 4–8 GB of memory recommended |
+| 1Password service accounts | Proprietary | Later provider; validated in Gate C |
+| SOPS, age | MPL-2.0, BSD | File encryption, not a store |
+
 ### Delivery
 
 - Environment delivery is per process where possible.
@@ -42,6 +54,8 @@ The credential broker resolves server-approved secret bindings at launch time an
 ### Agent Authentication
 
 API-key and interactive subscription login paths differ between agents. Validate at least one supported path per agent. Agent-managed OAuth state may need persistent user storage and must be treated as sensitive backup content. Do not promise a universal environment-variable authentication interface.
+
+All four agents sign in with a subscription inside an environment and keep the login in a mode-600 file in the persistent home ([agent authentication](../research/2026-10-agent-auth.md)): Claude Code in `~/.claude/.credentials.json` (code pasted from the client), and Codex, OpenCode, and Pi with ChatGPT, whose OAuth redirect to `localhost:1455` reaches the guest because `connect` forwards that port. These logins are per environment and are carried by disk backups.
 
 Claude Code supports both subscription paths ([Gate C](../research/2026-10-gate-c.md)): interactive login over SSH stores plaintext tokens in `~/.claude/.credentials.json` on the data disk, and a `claude setup-token` token stored with the secret provider can be delivered per session as `CLAUDE_CODE_OAUTH_TOKEN` without writing a credentials file.
 

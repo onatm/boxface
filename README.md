@@ -177,6 +177,8 @@ boxfacectl connect travel                 # tmux session "main"; starts travel f
 boxfacectl connect travel --session work  # another tmux session in the same environment
 ```
 
+Agents sign in inside the environment, once per environment: run `claude` and `/login`, `codex login`, `opencode auth login`, or `pi` and `/login`. Open the URL it prints on your client. ChatGPT sign-ins redirect to `localhost:1455`, which `connect` forwards to the environment automatically; add `--forward PORT` to reach other guest ports, such as a dev server. Logins are stored in your home on the data disk and survive restarts.
+
 `connect` runs your `ssh` with the device key, the environment's host key pinned in `known_hosts` beside the login file, and `boxfacectl tunnel` as the proxy command, so it works the same through a public address or Tailscale. Closing the terminal or losing the network leaves tmux and everything in it running; run `connect` again to reattach. Environments created before host keys were pinned have none and must be recreated.
 
 The image needs `tmux` in its profile; `experiments/gate-c/profile/flake.nix` includes it.

@@ -47,7 +47,7 @@ Do not inject model secrets into a shared tmux server environment. A session lau
 
 ### Port Forwarding
 
-- `forward travel 3000:3000` binds client loopback by default and forwards to the guest application port through authenticated SSH.
+- `forward travel 3000:3000` binds client loopback by default and forwards to the guest application port through authenticated SSH. *Implemented as* `connect NAME --forward 3000`, with `localhost:1455` forwarded automatically for agent sign-ins ([agent authentication](../research/2026-10-agent-auth.md)); a separate `forward` command is not built.
 - Explicitly distinguish guest ports from ports inside Docker containers.
 - Do not automatically expose guest services publicly. Public preview URLs are deferred.
 
