@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -32,6 +33,7 @@ commands:
   image import SOURCE [--alias NAME]
   image list
   create NAME [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
+  connect NAME [--session NAME]
   list
   inspect NAME
   start NAME [--no-wait]
@@ -62,6 +64,7 @@ type cli struct {
 	configPath  string
 	json        bool
 	newKey      func() string
+	ssh         func(args, env []string) error
 }
 
 func main() {
@@ -74,8 +77,16 @@ func main() {
 		interactive: term.IsTerminal(int(os.Stdin.Fd())),
 		configPath:  defaultConfigPath(),
 		newKey:      randomKey,
+		ssh:         runSSH,
 	}
 	os.Exit(c.run(ctx, os.Args[1:]))
+}
+
+func runSSH(args, env []string) error {
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(), env...)
+	return cmd.Run()
 }
 
 func defaultConfigPath() string {
@@ -139,6 +150,13 @@ func (c *cli) dispatch(ctx context.Context, command string, args []string) error
 		return errUsage
 	case "create":
 		return c.create(ctx, args)
+	case "connect":
+		return c.connect(ctx, args)
+	case "tunnel":
+		if len(args) != 1 {
+			return errUsage
+		}
+		return c.tunnel(ctx, args[0])
 	case "list":
 		return c.list(ctx)
 	case "inspect":
@@ -525,11 +543,7 @@ func (c *cli) operation(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Accepted, noWait bool) error {
-	if noWait {
-		c.output(acc, func(w io.Writer) { fmt.Fprintf(w, "operation %s accepted\n", acc.OperationID) })
-		return nil
-	}
+func (c *cli) wait(ctx context.Context, api *client.Client, acc lifecycle.Accepted) error {
 	fmt.Fprintf(c.stderr, "operation %s\n", acc.OperationID)
 	op, err := api.Follow(ctx, acc.OperationID, func(step string) { fmt.Fprintf(c.stderr, "  done: %s\n", step) })
 	if errors.Is(err, context.Canceled) {
@@ -542,10 +556,132 @@ func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Acce
 	if op.State != "succeeded" {
 		return fmt.Errorf("operation %s %s: %s", op.ID, op.State, op.ErrorMessage)
 	}
+	return nil
+}
+
+func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Accepted, noWait bool) error {
+	if noWait {
+		c.output(acc, func(w io.Writer) { fmt.Fprintf(w, "operation %s accepted\n", acc.OperationID) })
+		return nil
+	}
+	if err := c.wait(ctx, api, acc); err != nil {
+		return err
+	}
 	env, err := api.Environment(context.WithoutCancel(ctx), acc.EnvironmentID)
 	if err != nil {
 		return err
 	}
 	c.output(env, func(w io.Writer) { printEnvironment(w, env) })
 	return nil
+}
+
+func (c *cli) connect(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	session := fs.String("session", "main", "tmux session to create or attach to")
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) != 1 || !sessionPattern.MatchString(*session) {
+		return errUsage
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	env, err := c.resolve(ctx, api, rest[0])
+	if err != nil {
+		return err
+	}
+	switch env.ObservedState {
+	case "running":
+	case "deleted":
+		return fmt.Errorf("%s is deleted", env.Name)
+	default:
+		fmt.Fprintf(c.stderr, "%s is %s; starting it\n", env.Name, env.ObservedState)
+		acc, err := api.Start(ctx, c.newKey(), env.ID)
+		if err != nil {
+			return err
+		}
+		if err := c.wait(ctx, api, acc); err != nil {
+			return err
+		}
+	}
+	conn, err := api.Connection(ctx, env.ID)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(c.configPath)
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := pinHostKey(knownHosts, env.ID, conn.HostKey); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	sshArgs := []string{
+		"-i", filepath.Join(dir, "id_ed25519"),
+		"-o", "IdentitiesOnly=yes",
+		"-o", "UserKnownHostsFile=" + knownHosts,
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "HostKeyAlias=" + env.ID,
+		"-o", "ProxyCommand=" + shellQuote(self) + " tunnel " + env.ID,
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
+		"-t", conn.User + "@" + env.Name,
+		"tmux", "new-session", "-A", "-s", *session,
+	}
+	err = c.ssh(sshArgs, []string{"BOXFACE_CONFIG=" + c.configPath})
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 255 {
+		return fmt.Errorf("connection to %s lost or refused; run boxfacectl connect %s to reattach", env.Name, env.Name)
+	}
+	return err
+}
+
+var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func pinHostKey(path, environmentID, hostKey string) error {
+	if hostKey == "" || strings.ContainsAny(hostKey, "\r\n") {
+		return errors.New("server returned an invalid host key")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if line != "" && !strings.HasPrefix(line, environmentID+" ") {
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, environmentID+" "+hostKey)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (c *cli) tunnel(ctx context.Context, environmentID string) error {
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	conn, err := api.Tunnel(ctx, environmentID)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	go func() {
+		io.Copy(conn, c.stdin)
+		conn.Close()
+	}()
+	io.Copy(c.stdout, conn)
+	return ctx.Err()
 }

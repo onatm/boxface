@@ -185,6 +185,46 @@ func (c *Client) Delete(ctx context.Context, idempotencyKey, id string, purge bo
 	return acc, err
 }
 
+type Connection struct {
+	EnvironmentID string `json:"environment_id"`
+	User          string `json:"user"`
+	HostKey       string `json:"host_key"`
+}
+
+func (c *Client) Connection(ctx context.Context, id string) (Connection, error) {
+	var conn Connection
+	err := c.do(ctx, http.MethodGet, "/v1/environments/"+url.PathEscape(id)+"/connection", nil, nil, &conn)
+	return conn, err
+}
+
+func (c *Client) Tunnel(ctx context.Context, id string) (io.ReadWriteCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/environments/"+url.PathEscape(id)+"/ssh", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "boxface-ssh")
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	resp, err := (&http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, Protocols: protocols}}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer resp.Body.Close()
+		var e struct {
+			Error Error `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil || e.Error.Code == "" {
+			return nil, &Error{Status: resp.StatusCode, Code: "http_error", Message: resp.Status}
+		}
+		e.Error.Status = resp.StatusCode
+		return nil, &e.Error
+	}
+	return resp.Body.(io.ReadWriteCloser), nil
+}
+
 func (c *Client) Operation(ctx context.Context, id string) (lifecycle.Operation, error) {
 	var op lifecycle.Operation
 	err := c.do(ctx, http.MethodGet, "/v1/operations/"+url.PathEscape(id), nil, nil, &op)

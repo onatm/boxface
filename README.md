@@ -11,8 +11,9 @@ Early and single-owner. What works today:
 - `boxface-api` and `boxface-worker` run on one KVM host as systemd services.
 - Environments can be created, listed, inspected, started, stopped, deleted, and purged through the API or `boxfacectl`, and survive API, worker, and host restarts ([acceptance results](docs/research/2026-10-lifecycle.md)).
 - Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet.
+- `boxfacectl connect` reaches an environment's SSH through the API, with a host key pinned at creation, and attaches to a tmux session.
 
-Not yet built: an SSH gateway and session management, connection discovery, credential delivery to sessions, image builds through the API, backups, upgrades, and a web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
+Not yet built: session records, credential delivery to sessions, image builds through the API, backups, upgrades, and a web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
 
 ## Requirements
 
@@ -166,17 +167,14 @@ The login is stored in `$BOXFACE_CONFIG`, or in `boxface/config.json` under your
 
 ### Connect to an environment
 
-Connection discovery isn't built yet. Each environment gets its own `/30` network from `172.20.0.0/16`, and the guest is the second address in it. To find it, look on the host for the network device named after the environment ID. For example, environment `5eb2deb9-5b8b-…` uses device `bfx5eb2deb95b8b`:
-
 ```sh
-ip -4 -br addr show dev bfx<first 12 hex digits of the ID>   # e.g. 172.20.0.1/30, so the guest is 172.20.0.2
+boxfacectl connect travel                 # tmux session "main"; starts travel first if it is stopped
+boxfacectl connect travel --session work  # another tmux session in the same environment
 ```
 
-Then connect as `dev`, through the host, with the device key `login` created (on macOS it is in `~/Library/Application Support/boxface/`):
+`connect` runs your `ssh` with the device key, the environment's host key pinned in `known_hosts` beside the login file, and `boxfacectl tunnel` as the proxy command, so it works the same through a public address or Tailscale. Closing the terminal or losing the network leaves tmux and everything in it running; run `connect` again to reattach. Environments created before host keys were pinned have none and must be recreated.
 
-```sh
-ssh -i ~/.config/boxface/id_ed25519 -J root@<host> dev@172.20.0.2
-```
+The image needs `tmux` in its profile; `experiments/gate-c/profile/flake.nix` includes it.
 
 Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp` and `/run` are in memory. The root filesystem is read-only, there is no sudo, and Docker runs rootless as `dev`.
 

@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +47,15 @@ func (w *gatedWorker) StartVM(ctx context.Context, _ lifecycle.VMSpec) error {
 	}
 }
 
+type fakeGateway struct{}
+
+func (fakeGateway) Endpoint(context.Context, string) (netip.Addr, error) {
+	return netip.MustParseAddr("172.20.0.6"), nil
+}
+func (fakeGateway) HostKey(context.Context, string) (string, error) {
+	return "ssh-ed25519 AAAAhost", nil
+}
+
 type harness struct {
 	t         *testing.T
 	server    string
@@ -52,6 +64,7 @@ type harness struct {
 	config    string
 	worker    *gatedWorker
 	runner    *lifecycle.Runner
+	sshCalls  [][]string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -73,7 +86,13 @@ func newHarness(t *testing.T) *harness {
 		Lifecycle:    lifecycle.NewService(db, runner, lifecycle.Capacity{}),
 		Images:       images.NewRegistry(db, importDir, filepath.Join(dir, "images")),
 		SSHKeys:      sshkeys.NewStore(db),
+		Gateway:      fakeGateway{},
 		PollInterval: 10 * time.Millisecond,
+		DialGuest: func(context.Context, string) (net.Conn, error) {
+			guest, client := net.Pipe()
+			go func() { io.Copy(guest, guest); guest.Close() }()
+			return client, nil
+		},
 	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
@@ -94,6 +113,10 @@ func (h *harness) run(ctx context.Context, stdin string, interactive bool, args 
 		interactive: interactive,
 		configPath:  h.config,
 		newKey:      randomKey,
+		ssh: func(args, env []string) error {
+			h.sshCalls = append(h.sshCalls, append(args, env...))
+			return nil
+		},
 	}
 	code := c.run(ctx, args)
 	return code, stdout.String(), stderr.String()
@@ -236,5 +259,112 @@ func TestLoginRegistersDeviceKeyAndCreateUsesDefaults(t *testing.T) {
 	}
 	if created.ObservedState != "running" || created.VCPUs != 2 || created.MemoryMiB != 2048 {
 		t.Fatalf("created = %+v", created)
+	}
+}
+
+func (h *harness) createMain() lifecycle.Environment {
+	h.t.Helper()
+	h.ok("login", h.server, "--code", h.code)
+	os.MkdirAll(filepath.Join(h.importDir, "base"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "base", "vmlinux"), []byte("kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "base", "rootfs.ext4"), []byte("rootfs"), 0o644)
+	h.ok("image", "import", "base", "--alias", "main")
+	var env lifecycle.Environment
+	if err := json.Unmarshal([]byte(h.ok("--json", "create", "travel")), &env); err != nil {
+		h.t.Fatal(err)
+	}
+	return env
+}
+
+func TestConnectStartsStoppedEnvironmentAndPinsHostKey(t *testing.T) {
+	h := newHarness(t)
+	env := h.createMain()
+	h.ok("stop", "travel")
+
+	code, _, errOut := h.run(context.Background(), "", false, "connect", "travel")
+	if code != exitOK || !strings.Contains(errOut, "travel is stopped; starting it") {
+		t.Fatalf("connect: exit %d, %s", code, errOut)
+	}
+	if out := h.ok("inspect", "travel"); !strings.Contains(out, "running") {
+		t.Fatalf("not started: %s", out)
+	}
+	if len(h.sshCalls) != 1 {
+		t.Fatalf("ssh calls = %v", h.sshCalls)
+	}
+	dir := filepath.Dir(h.config)
+	args := strings.Join(h.sshCalls[0], " ")
+	for _, want := range []string{
+		"-i " + filepath.Join(dir, "id_ed25519"),
+		"UserKnownHostsFile=" + filepath.Join(dir, "known_hosts"),
+		"StrictHostKeyChecking=yes",
+		"HostKeyAlias=" + env.ID,
+		" tunnel " + env.ID,
+		"ServerAliveInterval=15",
+		"-t dev@travel tmux new-session -A -s main",
+		"BOXFACE_CONFIG=" + h.config,
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("ssh args %q lack %q", args, want)
+		}
+	}
+
+	os.WriteFile(filepath.Join(dir, "known_hosts"), []byte("other ssh-ed25519 AAAAother\n"+env.ID+" ssh-ed25519 AAAAstale\n"), 0o600)
+	h.ok("connect", "travel", "--session", "work")
+	if args := strings.Join(h.sshCalls[1], " "); !strings.Contains(args, "-s work") {
+		t.Fatalf("session args = %s", args)
+	}
+	known, _ := os.ReadFile(filepath.Join(dir, "known_hosts"))
+	if string(known) != "other ssh-ed25519 AAAAother\n"+env.ID+" ssh-ed25519 AAAAhost\n" {
+		t.Fatalf("known_hosts = %q", known)
+	}
+	if code, _, _ := h.run(context.Background(), "", false, "connect", "travel", "--session", "a b"); code != exitUsage {
+		t.Fatalf("bad session name: exit %d", code)
+	}
+}
+
+func TestInterruptedConnectLeavesStartRunning(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	h.ok("stop", "travel")
+	h.worker.gate = make(chan struct{})
+	h.worker.entered = make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-h.worker.entered; cancel() }()
+	code, _, errOut := h.run(ctx, "", false, "connect", "travel")
+	if code != exitInterrupted || !strings.Contains(errOut, "continues on the server") || len(h.sshCalls) != 0 {
+		t.Fatalf("interrupted connect: exit %d, ssh %v, %s", code, h.sshCalls, errOut)
+	}
+	close(h.worker.gate)
+	h.runner.Wait()
+	if out := h.ok("inspect", "travel"); !strings.Contains(out, "running") {
+		t.Fatalf("start did not finish: %s", out)
+	}
+}
+
+func TestTunnelCarriesBytes(t *testing.T) {
+	h := newHarness(t)
+	env := h.createMain()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	c := &cli{stdin: bufio.NewReader(stdinR), stdout: stdoutW, stderr: io.Discard, configPath: h.config}
+	done := make(chan int)
+	go func() { done <- c.run(context.Background(), []string{"tunnel", env.ID}) }()
+	io.WriteString(stdinW, "SSH-2.0-test\r\n")
+	line, err := bufio.NewReader(stdoutR).ReadString('\n')
+	if err != nil || line != "SSH-2.0-test\r\n" {
+		t.Fatalf("echo = %q, %v", line, err)
+	}
+	stdinW.Close()
+	go io.Copy(io.Discard, stdoutR)
+	if code := <-done; code != exitOK {
+		t.Fatalf("tunnel exit %d", code)
+	}
+
+	h.ok("stop", "travel")
+	code, _, errOut := h.run(context.Background(), "", false, "tunnel", env.ID)
+	if code != exitError || !strings.Contains(errOut, "environment_not_running") {
+		t.Fatalf("tunnel to stopped: exit %d, %s", code, errOut)
 	}
 }
