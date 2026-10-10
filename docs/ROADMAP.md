@@ -12,7 +12,7 @@
 
 **Last reviewed:** 2026-10-09
 
-**Next review:** When durable server lifecycle exits, or when ThinkCentre measurements contradict the nested-droplet results.
+**Next review:** When the daily terminal workflow exits, or when ThinkCentre measurements contradict the nested-droplet results.
 
 ---
 
@@ -35,7 +35,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - Validate risky integrations before building product surfaces on them; proposed choices are not validated integrations.
 - Never weaken the managed-baseline guarantee to make a workload pass; revisit it as an explicit decision.
-- Measure on the actual ThinkCentre hardware before promising startup times, concurrency, or density.
+- Measure on the actual ThinkCentre hardware, in the final MVP stage, before promising startup times, concurrency, or density.
 - Build one backend per extension point first: hypervisor, artifact storage, secret provider, and host placement.
 - Keep detailed requirements in feature docs and implementation in design docs.
 
@@ -51,50 +51,36 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Outcome / problem | Strategic objective | Success signal | Confidence | Owner |
 |---|---|---|---|---|---|
-| Now | Environments need a durable lifecycle | Keep operations low-burden | Repeated operations and management-service restarts retain correct ownership and state | Medium: baseline proven; plan written, implementation starting | onatm |
-| Next | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: depends on Now | onatm |
+| Now | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: lifecycle complete; plan written | onatm |
 | Next | Routine use still needs host internals | Keep operations low-burden | No manual host edits for configuration, upgrades, backups | Medium | onatm |
 | Next | The MVP is unproven in real work | Replace the laptop | Ten development days without Boxface-caused fallback | Medium | onatm |
+| Next | Results come only from a nested-virtualization droplet | Replace the laptop | All scenarios pass on the ThinkCentre with measured capacity | Medium | onatm |
 | Later | Unknown whether others value Boxface | Decide productisation | Repeated use by invited developers | Low | onatm |
 | Later | Capabilities beyond one owner on one host | Decide productisation | To be defined | Low | onatm |
 
 ## Now
 
-### Durable server lifecycle
-
-- **Target outcome:** Environments can be created, listed, started, stopped, and deleted through the API, and survive management-service restarts with correct ownership and state.
-- **Problem / opportunity:** A manually launched guest has no durable intent, so retries and restarts duplicate disks or orphan processes.
-- **Why now:** The baseline experiment passed on 2026-10-09, and every client feature depends on a durable lifecycle.
-- **Evidence:** Gates [A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), and [C](./research/2026-10-gate-c.md) validated the guest, profile, container runtime, personalisation, and credential delivery that the lifecycle launches and manages.
-- **Committed initiatives:** [Durable Server Lifecycle](./plans/2026-10-durable-lifecycle.md) plan, implemented in Go, milestones M0–M6.
-- **Candidate bets:** API, SQLite metadata, worker, image registry, environment disks, asynchronous operations, recovery, and server diagnostics ([Boxface API](./designs/api.md), [Host Worker](./designs/host-worker.md), [Operations](./designs/operations.md)).
-- **Success and guardrails:** Retried creates return the same operation; API/worker restarts discover existing guests without duplicate launch. The API never runs client-supplied privileged commands; guests never reach the management plane.
-- **Dependencies:** Firecracker confirmed on the ThinkCentre without nested virtualization.
-- **Risks / assumptions:** Gate timings come from a nested-virtualization droplet and may not hold on the ThinkCentre. The broker stub had no real guest authorisation; the worker-to-guest channel must provide it.
-- **Confidence:** Medium.
-- **Owner:** onatm
-- **Advance / completion criteria:** The success signal holds under repeated operations and management-service restarts.
-
-## Next
-
 ### Daily terminal workflow
 
-- **Target outcome:** From the tablet, the owner connects to a named session, runs any of the four agents and optional mise on real repositories, forwards previews, and reattaches after disconnects.
-- **Problem / opportunity:** Lifecycle alone does not let the owner work remotely.
-- **Why prioritized:** It is the core of the laptop-replacement objective.
-- **Candidate bets:** Authentication, SSH connection discovery, named sessions, port forwarding, and runtime secret bindings ([Access and Sessions](./designs/access-and-sessions.md), [Credential Broker](./designs/credential-broker.md)).
+- **Target outcome:** From the tablet, the owner logs in, creates an environment, and connects to a named session with `boxfacectl login`, `create`, and `connect`; runs any of the four agents and optional mise on real repositories; and reattaches after disconnects. The host is reached over Tailscale with its public address disabled, or over TLS on a public address.
+- **Problem / opportunity:** Lifecycle alone does not let the owner work remotely; connecting still needs host lookups and a jump through host SSH.
+- **Why now:** Durable server lifecycle exited on 2026-10-10.
+- **Committed initiatives:** [Install, Configure, Connect](./plans/2026-10-connect-and-web-ui.md) plan, milestones C0–C7. It pulls the configuration part of the [Web UI](./designs/web-ui.md) forward from Usable configuration and operations.
+- **Candidate bets:** Authentication, an API-authorised SSH tunnel, named tmux sessions, server defaults and a `main` image, and runtime secret bindings ([Access and Sessions](./designs/access-and-sessions.md), [Credential Broker](./designs/credential-broker.md)).
 - **Success signal:** Tablet disconnects do not terminate running sessions; project work stays remote and recoverable; Claude Code, Codex, OpenCode, and Pi each complete a small real task with a supported authentication mode.
-- **Dependencies:** Durable server lifecycle.
-- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Provisional target: session attachment within 3 seconds on a healthy private network.
+- **Dependencies:** Durable server lifecycle (complete).
+- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Long-lived tunnels through `tailscale serve` are unproven (plan C0). Provisional target: session attachment within 3 seconds on a healthy private network.
 - **Confidence:** Medium.
 - **Owner:** onatm
-- **Move-to-Now criteria:** Durable server lifecycle exits.
+- **Advance / completion criteria:** The plan's acceptance scenarios pass on the droplet, and the success signal holds.
+
+## Next
 
 ### Usable configuration and operations
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
-- **Candidate bets:** Small [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
+- **Candidate bets:** The rest of the [Web UI](./designs/web-ui.md), recipe/profile revision management, explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
 - **Confidence:** Medium.
@@ -108,10 +94,22 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Candidate bets:** Use Boxface for at least ten actual development days, including sessions over more than one network. Record failures, manual interventions, tool/profile changes, and time to recover.
 - **Success signal:** Ten days without Boxface-caused fallback. This validates the chosen workloads, not all Linux development.
 - **Dependencies:** Usable configuration and operations.
-- **Risks / assumptions:** Provisional warm-start target of 15 seconds may not hold on the actual hardware.
+- **Risks / assumptions:** Runs on the available host until the ThinkCentre stage; timings from a nested-virtualization host may not match bare metal.
 - **Confidence:** Medium.
 - **Owner:** onatm
 - **Move-to-Now criteria:** Usable configuration and operations exits.
+
+### ThinkCentre validation
+
+- **Target outcome:** Everything validated on the droplet holds on the ThinkCentre without nested virtualization, with measured capacity.
+- **Problem / opportunity:** Every gate and acceptance run so far used a nested-virtualization droplet.
+- **Candidate bets:** Repeat Gate A and the lifecycle, recovery, and connect acceptance scenarios on the ThinkCentre; measure CPU, memory, disk, and start times; set capacity limits from the measurements.
+- **Success signal:** All scenarios pass on the ThinkCentre; the 15-second warm-start and 3-second attachment targets are checked; capacity limits are set from measurements.
+- **Dependencies:** Personal daily-use trial.
+- **Risks / assumptions:** Firecracker may behave differently without nested virtualization; Cloud Hypervisor is the fallback.
+- **Confidence:** Medium.
+- **Owner:** onatm
+- **Move-to-Now criteria:** Personal daily-use trial exits.
 
 ## Later
 
@@ -133,6 +131,13 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Reconsideration trigger:** Productisation evidence shows demand.
 
 ## Completed
+
+### Durable server lifecycle
+
+- **Completed:** 2026-10-10, in the [Durable Server Lifecycle](./plans/2026-10-durable-lifecycle.md) plan, on the test droplet.
+- **Outcome:** Environments are created, listed, inspected, started, stopped, deleted, and purged through the API and `boxfacectl`, and survive API, worker, and host restarts without duplicate launches, disks, or network devices.
+- **Evidence:** [Lifecycle acceptance](./research/2026-10-lifecycle.md): all 13 scenarios pass.
+- **Carried forward:** The ThinkCentre repeat moves to the ThinkCentre validation stage; image removal and asynchronous image registration remain open findings.
 
 ### Prove the baseline boundaries
 
@@ -159,8 +164,8 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Item | Criticality | Current evidence | Validation / resolution | Owner |
 |---|---|---|---|---|
-| ThinkCentre hardware supports the needed environments | High | Capacity not measured; gates ran on a nested-virtualization droplet | Measure CPU, memory, and disk on the ThinkCentre before setting lifecycle capacity limits | onatm |
-| Firecracker supports rootless Docker and the guest kernel | High | Passed on a nested-virtualization droplet ([Gate A](./research/2026-10-gate-a.md)) | Repeat Gate A on the ThinkCentre; fallback Cloud Hypervisor | onatm |
+| ThinkCentre hardware supports the needed environments | High | Capacity not measured; gates ran on a nested-virtualization droplet | ThinkCentre validation stage | onatm |
+| Firecracker supports rootless Docker and the guest kernel | High | Passed on a nested-virtualization droplet ([Gate A](./research/2026-10-gate-a.md)) | Repeat Gate A in the ThinkCentre validation stage; fallback Cloud Hypervisor | onatm |
 | Home Manager profile can be exported and exposed read-only on Debian | High | Validated ([Gate B](./research/2026-10-gate-b.md)) | Gate B | onatm |
 | Each agent has a supported authentication path in the guest | Medium | Claude Code validated with subscription login and setup token ([Gate C](./research/2026-10-gate-c.md)); others untested | Gate C and the daily terminal workflow | onatm |
 | Implementation language | High | Decided: Go | Resolved 2026-10-09 | onatm |
@@ -178,6 +183,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | 2026-10-06 | Created the roadmap from the MVP delivery stages and productisation plan | Docs restructured into architecture, design, feature, and plan docs | onatm |
 | 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now before its plan exists, with the language choice and plan as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
 | 2026-10-09 | Chose Go as the implementation language | Owner decision; the lifecycle plan is the remaining first deliverable | onatm |
+| 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
 
 ## Linked Documents
 

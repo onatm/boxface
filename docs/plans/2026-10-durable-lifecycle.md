@@ -1,6 +1,6 @@
 # Durable Server Lifecycle
 
-**Status:** M0–M6 complete on the test droplet ([results](../research/2026-10-lifecycle.md)); ThinkCentre repeat pending
+**Status:** Complete on the test droplet ([results](../research/2026-10-lifecycle.md)); the ThinkCentre repeat moved to the [ThinkCentre validation](../ROADMAP.md#thinkcentre-validation) stage
 
 **Roadmap:** [Durable server lifecycle](../ROADMAP.md#durable-server-lifecycle)
 
