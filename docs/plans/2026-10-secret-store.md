@@ -1,6 +1,6 @@
 # Agent Credential Store
 
-**Status:** Planned — decisions confirmed by the owner on 2026-10-10
+**Status:** S1–S5 done and committed; S7 (credentials for any tool) planned; S6 acceptance pending the owner's Claude Code token
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "built-in secret store"
 
@@ -82,6 +82,26 @@ Confirmed by the owner on 2026-10-10, with the `shell` consumer deferred and the
 | S4. Guest *(done)* | `boxface-run` (cross-compiled into the image), wrappers, PATH change, onboarding fix; rebuild the image | Integration test on the droplet: a bound variable reaches the child process and not the parent shell, `/run`, `/tmp`, or the data disk; an unbound consumer runs unchanged; a bound but unpushed set fails the launch |
 | S5. Web UI *(done)* | Credentials page with presets | Values never rendered back; cross-origin rules as for the other pages |
 | S6. Acceptance | Scenarios below on the droplet | Results recorded in `docs/research/` |
+
+## S7. Credentials for Any Tool
+
+Decided by the owner on 2026-10-10 after S1–S5: credentials are not specific to coding agents. Someone may bind a token for `gh`, `terraform`, or `aws` as readily as for `claude`.
+
+| Decision | Proposal | Reason |
+|---|---|---|
+| Binding target | A binding names either a command (any name matching `^[a-z0-9][a-z0-9._+-]{0,63}$`, such as `gh` or `claude`) or `session` | The four fixed consumers become ordinary command names; nothing in the store is agent-specific |
+| Command delivery (default) | When a login shell starts (every `connect` window, since tmux starts login shells), a profile script asks the broker which commands have bindings, resolves each to its real path on PATH, and writes shims to `/run/user/1000/boxface/bin` (tmpfs), placed first on PATH. A shim runs `boxface-run --command NAME -- REAL "$@"`, which adds only that command's variables | Only the named tool and what it starts see the value; any tool works without changing the image |
+| Session delivery (opt-in per credential) | The same script exports `session` bindings into the shell's own environment, fetched fresh for each new shell; never set in tmux's server environment | For values wanted everywhere, such as a git token; the web UI marks them visible to every process in the session |
+| Broker protocol | Adds `{"list": true}` → `{"commands": [...], "session": true/false}`; `{"consumer": NAME}` keeps its reply | One round trip per shell start, one per launch |
+| Image | The fixed wrappers in `/opt/boxface/bin` are removed; `boxface-run` gains `--list`, `--session-env` (shell-quoted `export` lines on stdout), and `--command` | Wrappers come from bindings, not from the image |
+| Migration | Existing bindings `claude-code`, `codex`, `opencode`, `pi` become `claude`, `codex`, `opencode`, `pi` | Same behaviour for the presets |
+| Web UI | "Given to" chooses commands (free text, with the agents and common tools suggested) or "every session", with a warning on the latter | Presets stay as shortcuts |
+
+Trade-offs accepted: a tool started by absolute path, or with a PATH that skips the shim directory, receives nothing; a shell opened before a binding was added gets the shim from its next start; session values stay in already-open shells after rotation or deletion.
+
+| Step | Work | Verify |
+|---|---|---|
+| S7. General bindings | Migration and validation for command names and `session`; broker `list`; `boxface-run` modes; profile script; web UI changes; image rebuild | Tests: a `gh` binding reaches `gh` and not `git` or the parent shell; a `session` binding reaches a new shell and not tmux's server environment; removed bindings disappear from the next shell; presets still work after migration |
 
 ## Acceptance Scenarios
 
