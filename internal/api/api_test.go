@@ -825,7 +825,7 @@ func TestSecretRoutesNeverReturnValues(t *testing.T) {
 	resp = e.request("one", http.MethodGet, "/v1/secrets", nil, nil)
 	raw, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(raw), "CLAUDE_CODE_OAUTH_TOKEN") || !strings.Contains(string(raw), `"consumers"`) || strings.Contains(string(raw), value) {
+	if !strings.Contains(string(raw), "CLAUDE_CODE_OAUTH_TOKEN") || !strings.Contains(string(raw), `"suggested"`) || strings.Contains(string(raw), value) {
 		t.Fatalf("list = %s", raw)
 	}
 

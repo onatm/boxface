@@ -187,13 +187,14 @@ Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp`
 
 ### Agent credentials
 
-Instead of signing in to an agent in every environment, save a credential once on the web UI's Credentials page. Each environment's `claude`, `codex`, `opencode`, and `pi` commands are wrappers that fetch only their own credentials when they start, so you run them as usual:
+Save tokens and keys once on the web UI's Credentials page instead of signing in to tools in every environment. Each credential is given to the commands you name, such as `claude`, `gh`, or `terraform`, or to every session:
 
-- **Claude Code:** run `claude setup-token` on any machine with a browser and save the token under "Claude Code subscription token".
-- **API keys:** OpenAI, Anthropic, and OpenRouter keys have presets; "Custom" binds any variable to chosen agents.
+- **Commands:** each shell `connect` opens puts small launchers for those commands first on PATH. Running `gh` gives only `gh` (and what it starts) the value; the shell itself never holds it.
+- **Every session:** the value is exported in each new shell. Every process in the session can read it, so prefer naming commands.
+- **Presets:** Claude Code token (`claude setup-token` on any machine with a browser), OpenAI and Anthropic API keys, and a GitHub token for `gh`.
 - **ChatGPT subscriptions** (Codex, OpenCode, Pi) cannot be shared: their tokens rotate on use. Sign in inside each environment as above.
 
-Changes apply at the next agent launch, with no restart. Values are encrypted on the server, never shown again, and never written to disk in the environment. To run an agent without stored credentials, call it directly, for example `/opt/boxface/profile/bin/claude`. Environments need an image built after this feature; older images run agents without stored credentials.
+Commands get the current value each time they start, in shells opened after it was saved; nothing is written to disk in the environment. To run a command without stored credentials, call it by its full path, for example `/opt/boxface/profile/bin/claude`. Environments need an image built after this feature.
 
 ### Credential encryption
 

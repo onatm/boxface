@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,11 +72,14 @@ func (b *broker) await(environmentID string) (lifecycle.Credentials, bool) {
 
 type brokerRequest struct {
 	Consumer string `json:"consumer"`
+	List     bool   `json:"list"`
+	NoWait   bool   `json:"nowait"`
 }
 
 type brokerReply struct {
-	Env   map[string]string `json:"env,omitempty"`
-	Error string            `json:"error,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	Commands []string          `json:"commands,omitempty"`
+	Error    string            `json:"error,omitempty"`
 }
 
 func (b *broker) serve(environmentID string, conn net.Conn) {
@@ -83,13 +87,32 @@ func (b *broker) serve(environmentID string, conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(b.wait + 5*time.Second))
 	enc := json.NewEncoder(conn)
 	var req brokerRequest
-	if err := json.NewDecoder(io.LimitReader(conn, 1024)).Decode(&req); err != nil || req.Consumer == "" {
-		enc.Encode(brokerReply{Error: "request must be JSON with a consumer"})
+	if err := json.NewDecoder(io.LimitReader(conn, 1024)).Decode(&req); err != nil || (req.Consumer == "" && !req.List) {
+		enc.Encode(brokerReply{Error: "request must be JSON with a consumer or list"})
 		return
 	}
-	creds, ok := b.await(environmentID)
+	var creds lifecycle.Credentials
+	var ok bool
+	if req.NoWait {
+		b.mu.Lock()
+		creds, ok = b.sets[environmentID]
+		b.mu.Unlock()
+	} else {
+		creds, ok = b.await(environmentID)
+	}
 	if !ok {
 		enc.Encode(brokerReply{Error: "credentials for this environment are not loaded yet; try again shortly"})
+		return
+	}
+	if req.List {
+		commands := []string{}
+		for name := range creds {
+			if name != "session" {
+				commands = append(commands, name)
+			}
+		}
+		slices.Sort(commands)
+		enc.Encode(brokerReply{Commands: commands})
 		return
 	}
 	env := creds[req.Consumer]

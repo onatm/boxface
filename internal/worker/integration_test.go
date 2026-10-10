@@ -185,23 +185,32 @@ func TestIntegrationLifecycle(t *testing.T) {
 		"-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=10", "dev@"+endpoint.String(), "true").CombinedOutput(); err != nil {
 		t.Fatalf("ssh with the pinned host key: %v: %s", err, out)
 	}
-	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/true; echo rc=$?"); err != nil || !strings.Contains(out, "not loaded yet") || !strings.HasSuffix(out, "rc=1") {
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --command codex -- /usr/bin/true; echo rc=$?"); err != nil || !strings.Contains(out, "not loaded yet") || !strings.Contains(out, "rc=1") {
 		t.Fatalf("launch before a push = %q, %v", out, err)
 	}
 	const itValue = "boxface-it-credential-value"
 	if err := h.SetCredentials(ctx, ids[0], lifecycle.Credentials{"codex": {"BOXFACE_IT_TOKEN": itValue}}); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/printenv BOXFACE_IT_TOKEN"); err != nil || out != itValue {
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --command codex -- /usr/bin/printenv BOXFACE_IT_TOKEN"); err != nil || out != itValue {
 		t.Fatalf("bound variable in the child = %q, %v", out, err)
 	}
-	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer pi -- /bin/sh -c 'echo unbound=${BOXFACE_IT_TOKEN:-none}'"); err != nil || out != "unbound=none" {
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --command pi -- /bin/sh -c 'echo unbound=${BOXFACE_IT_TOKEN:-none}'"); err != nil || out != "unbound=none" {
 		t.Fatalf("unbound consumer = %q, %v", out, err)
 	}
 	if out, err := guestSSH(cfg, a.Guest, "echo parent=${BOXFACE_IT_TOKEN:-none}; grep -rlsF "+itValue+" /run /tmp /home/dev /workspace /mnt/data 2>/dev/null | head -3; echo scanned"); err != nil || out != "parent=none\nscanned" {
 		t.Fatalf("value outside the child process: %q, %v", out, err)
 	}
-	if out, err := guestSSH(cfg, b.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/printenv BOXFACE_IT_TOKEN; echo rc=$?"); err != nil || strings.Contains(out, itValue) {
+	if err := h.SetCredentials(ctx, ids[0], lifecycle.Credentials{"codex": {"BOXFACE_IT_TOKEN": itValue}, "session": {"BOXFACE_IT_SESSION": "session-value"}}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "bash -lc 'echo session=$BOXFACE_IT_SESSION; command -v codex; codex_shim=$(command -v codex); grep -c boxface-run \"$codex_shim\"; echo plain=${BOXFACE_IT_TOKEN:-none}'"); err != nil || !strings.Contains(out, "session=session-value") || !strings.Contains(out, "/boxface/bin/codex\n1") || !strings.Contains(out, "plain=none") {
+		t.Fatalf("login shell after shell init = %q, %v", out, err)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "tmux new-session -d -s it && tmux show-environment -g | grep -c BOXFACE_IT_SESSION; tmux kill-server"); err != nil || out != "0" {
+		t.Fatalf("session value in tmux's server environment: %q, %v", out, err)
+	}
+	if out, err := guestSSH(cfg, b.Guest, "/usr/local/bin/boxface-run --command codex -- /usr/bin/printenv BOXFACE_IT_TOKEN; echo rc=$?"); err != nil || strings.Contains(out, itValue) {
 		t.Fatalf("another environment received the value: %q, %v", out, err)
 	}
 	if _, err := guestSSH(cfg, a.Guest, "curl -fsS -m 15 -o /dev/null https://deb.debian.org"); err != nil {

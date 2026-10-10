@@ -354,6 +354,13 @@ func TestBrokerServesOnlyTheSocketsEnvironment(t *testing.T) {
 	if r := askBroker(t, socket("env-a"), `{"consumer":"codex"}`); r.Error != "" || len(r.Env) != 0 {
 		t.Fatalf("unbound consumer = %+v", r)
 	}
+	h.SetCredentials(ctx, "env-a", lifecycle.Credentials{"claude": {"CLAUDE_CODE_OAUTH_TOKEN": "token-a"}, "gh": {"GH_TOKEN": "g"}, "session": {"GIT_TOKEN": "s"}})
+	if r := askBroker(t, socket("env-a"), `{"list":true}`); strings.Join(r.Commands, ",") != "claude,gh" || len(r.Env) != 0 {
+		t.Fatalf("list = %+v", r)
+	}
+	if r := askBroker(t, socket("env-a"), `{"consumer":"session"}`); r.Env["GIT_TOKEN"] != "s" || len(r.Env) != 1 {
+		t.Fatalf("session = %+v", r)
+	}
 	if r := askBroker(t, socket("env-a"), `not json`); r.Error == "" {
 		t.Fatalf("malformed request = %+v", r)
 	}
@@ -379,5 +386,20 @@ func TestBrokerWaitsForAPush(t *testing.T) {
 	original["pi"]["A"] = "changed"
 	if got, _ := b.await("env-b"); got["pi"]["A"] != "1" {
 		t.Fatal("the broker kept a reference to the caller's map")
+	}
+}
+
+func TestBrokerNoWait(t *testing.T) {
+	b := newBroker(5 * time.Second)
+	client, server := net.Pipe()
+	go b.serve("env-unloaded", server)
+	started := time.Now()
+	io.WriteString(client, `{"list":true,"nowait":true}`+"\n")
+	var r brokerReply
+	if err := json.NewDecoder(client).Decode(&r); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Error, "not loaded") || time.Since(started) > time.Second {
+		t.Fatalf("nowait = %+v after %s", r, time.Since(started))
 	}
 }

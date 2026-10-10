@@ -364,7 +364,7 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"secrets": list, "consumers": secrets.Consumers})
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": list, "suggested": secrets.Suggested, "session": secrets.Session})
 }
 
 func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {

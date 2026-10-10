@@ -76,7 +76,7 @@ func TestValidation(t *testing.T) {
 		"empty value":      {"claude", "", claudeBinding},
 		"nul in value":     {"claude", "a\x00b", claudeBinding},
 		"oversized value":  {"claude", string(make([]byte, maxValue+1)), claudeBinding},
-		"unknown consumer": {"claude", claudeToken, []Binding{{"shell", "TOKEN"}}},
+		"bad command name": {"claude", claudeToken, []Binding{{"Bad Name", "TOKEN"}}},
 		"lowercase var":    {"claude", claudeToken, []Binding{{"pi", "token"}}},
 		"PATH":             {"claude", claudeToken, []Binding{{"pi", "PATH"}}},
 		"LD_PRELOAD":       {"claude", claudeToken, []Binding{{"pi", "LD_PRELOAD"}}},

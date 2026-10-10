@@ -172,3 +172,4 @@ fieldset.consumers { border: 1px solid var(--border); border-radius: 6px; paddin
 fieldset.consumers legend { color: var(--muted); font-size: 0.9rem; padding: 0 0.25rem; }
 label.inline { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text); }
 label.inline input { width: auto; }
+.hint.warn { color: var(--warn); }

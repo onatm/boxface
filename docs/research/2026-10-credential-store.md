@@ -48,3 +48,17 @@ The first leak scan reported one command-line match on each side; both were the 
 1. **Interactive Claude Code needs the onboarding flag.** With only `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code would show its first-run screens; the wrapper's `hasCompletedOnboarding` write avoids them. Its per-folder trust question still appears, as for any new folder.
 2. **A self-matching scan.** Searching `/proc/*/cmdline` for a string with a command that contains the string finds itself; acceptance scans must use a pattern such as `valu[e]`.
 3. **Credentials are agent-specific in this version.** The owner decided afterwards that bindings must target any command or the whole session ([S7](../plans/2026-10-secret-store.md#s7-credentials-for-any-tool)).
+
+## Credentials for Any Tool (S7)
+
+**Result:** Pass on the droplet with a rebuilt image and the services from this change.
+
+| Check | Result |
+|---|---|
+| Migration | The owner's `claude-code` binding became `claude`; the stored Claude Code token kept working |
+| Command shim | In a `connect` session, `claude` and `node` resolved to shims in `/run/user/1000/boxface/bin`; Claude Code answered with the stored token; a credential bound to `node` reached `node` and not the shell; the `node` shim pointed at `/opt/boxface/profile/bin/node` |
+| Session binding | Every new login shell had the value; tmux's global environment did not, because `connect` starts tmux from a non-login shell |
+| Removing a session binding | A new shell that inherited the old value had it unset |
+| Integration test | Shims and the session value in a login shell, none in a plain shell, none in tmux's environment, nothing in the other environment |
+
+**Finding:** a session value enters tmux's own environment when tmux is started from a login shell, which `connect` never does but a user may. `boxface-run --shell-init` therefore records the names (never the values) of the session variables it exported and unsets those that are no longer bound in the next shell, so a deleted credential stops appearing in new windows.

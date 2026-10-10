@@ -41,7 +41,7 @@ Decided by the owner on 2026-10-10: built in, using an open-source secret store 
 
 ### Delivery
 
-*Implemented:* `boxface-api` resolves an owner's bindings and pushes them to the worker after each start, after every change, and on reconcile; the worker holds them in memory and answers the guest launcher on the VM's own vsock socket; the launcher adds only the requesting agent's variables to that agent's environment. Nothing is written to disk on the host or in the guest, and changes reach the next launch without a restart.
+*Implemented:* `boxface-api` resolves an owner's bindings and pushes them to the worker after each start, after every change, and on reconcile; the worker holds them in memory and answers the guest launcher on the VM's own vsock socket; shims created at shell start add only a command's variables to that command's environment, and `session` bindings are exported in each new shell ([S7](../plans/2026-10-secret-store.md#s7-credentials-for-any-tool)). Nothing is written to disk on the host or in the guest, and changes reach the next launch without a restart.
 
 - Environment delivery is per process where possible.
 - Temporary file delivery uses a runtime directory with restrictive ownership and cleanup.

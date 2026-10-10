@@ -1,6 +1,6 @@
 # Agent Credential Store
 
-**Status:** S1–S6 done ([acceptance](../research/2026-10-credential-store.md)); S7 (credentials for any tool) planned
+**Status:** Done — S1–S7 ([acceptance](../research/2026-10-credential-store.md))
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "built-in secret store"
 
@@ -101,7 +101,7 @@ Trade-offs accepted: a tool started by absolute path, or with a PATH that skips 
 
 | Step | Work | Verify |
 |---|---|---|
-| S7. General bindings | Migration and validation for command names and `session`; broker `list`; `boxface-run` modes; profile script; web UI changes; image rebuild | Tests: a `gh` binding reaches `gh` and not `git` or the parent shell; a `session` binding reaches a new shell and not tmux's server environment; removed bindings disappear from the next shell; presets still work after migration |
+| S7. General bindings *(done)* | Migration and validation for command names and `session`; broker `list`; `boxface-run` modes; profile script; web UI changes; image rebuild | Tests: a `gh` binding reaches `gh` and not `git` or the parent shell; a `session` binding reaches a new shell and not tmux's server environment; removed bindings disappear from the next shell; presets still work after migration |
 
 ## Acceptance Scenarios
 

@@ -27,10 +27,13 @@ var (
 
 const maxValue = 8 << 10
 
-var Consumers = []string{"claude-code", "codex", "opencode", "pi"}
+const Session = "session"
+
+var Suggested = []string{"claude", "codex", "opencode", "pi", "gh", "git", "terraform", "aws"}
 
 var (
 	namePattern     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	commandPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._+-]{0,63}$`)
 	variablePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,127}$`)
 	reserved        = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TERM", "TMPDIR", "IFS", "ENV", "BASH_ENV"}
 )
@@ -105,8 +108,8 @@ func validValue(value string) error {
 func validBindings(bindings []Binding) error {
 	seen := map[Binding]bool{}
 	for _, b := range bindings {
-		if !slices.Contains(Consumers, b.Consumer) {
-			return fmt.Errorf("%w: consumer %q must be one of %s", ErrInvalid, b.Consumer, strings.Join(Consumers, ", "))
+		if !commandPattern.MatchString(b.Consumer) {
+			return fmt.Errorf("%w: %q must be a command name such as gh, or %q", ErrInvalid, b.Consumer, Session)
 		}
 		if !variablePattern.MatchString(b.Variable) || slices.Contains(reserved, b.Variable) || strings.HasPrefix(b.Variable, "LD_") {
 			return fmt.Errorf("%w: variable %q is not allowed", ErrInvalid, b.Variable)
