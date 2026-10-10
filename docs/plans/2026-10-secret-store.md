@@ -1,6 +1,6 @@
 # Agent Credential Store
 
-**Status:** S1–S5 done and committed; S7 (credentials for any tool) planned; S6 acceptance pending the owner's Claude Code token
+**Status:** S1–S6 done ([acceptance](../research/2026-10-credential-store.md)); S7 (credentials for any tool) planned
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "built-in secret store"
 
@@ -81,7 +81,7 @@ Confirmed by the owner on 2026-10-10, with the `shell` consumer deferred and the
 | S3. Push *(done)* | API pushes after `start_vm`, on secret changes for running environments, and on reconcile when the worker lacks a set; never stores values in operations | Tests: start pushes; a change reaches a running environment; after a simulated worker restart the next reconcile pushes again; operations and logs contain no value |
 | S4. Guest *(done)* | `boxface-run` (cross-compiled into the image), wrappers, PATH change, onboarding fix; rebuild the image | Integration test on the droplet: a bound variable reaches the child process and not the parent shell, `/run`, `/tmp`, or the data disk; an unbound consumer runs unchanged; a bound but unpushed set fails the launch |
 | S5. Web UI *(done)* | Credentials page with presets | Values never rendered back; cross-origin rules as for the other pages |
-| S6. Acceptance | Scenarios below on the droplet | Results recorded in `docs/research/` |
+| S6. Acceptance *(done)* | Scenarios below on the droplet | Results recorded in `docs/research/` |
 
 ## S7. Credentials for Any Tool
 

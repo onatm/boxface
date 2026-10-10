@@ -1,6 +1,6 @@
 # User Profiles and Builds
 
-**Status:** Proposed — decisions below await the owner; the owner chose the editor, builder, and layout on 2026-10-10
+**Status:** Planned — all decisions confirmed by the owner on 2026-10-10
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "recipe/profile revision management"
 
@@ -67,7 +67,7 @@ The base image ships `/opt/boxface/profile -> /nix/profile`, so PATH, wrappers, 
 
 ## Decisions
 
-Proposed; each needs the owner's confirmation.
+Confirmed by the owner on 2026-10-10.
 
 | Decision | Proposal | Reason |
 |---|---|---|
