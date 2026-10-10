@@ -28,8 +28,9 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | Method and route | Purpose |
 | --- | --- |
 | `GET /health` | Minimal liveness; no sensitive metadata. *Implemented* |
-| `POST /v1/login` | Exchange a one-time bootstrap code for an API token, `{"code", "name"}`; the name identifies the client. *Implemented* |
+| `POST /v1/login` | Exchange a one-time bootstrap code for an API token, `{"code", "name"}`; the name identifies the client. Without a code, sign in with the request's bound identity (Tailscale socket only). *Implemented* |
 | `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | List the owner's active tokens with name, creation, last use (to the minute), and which one made the request; revoke one. *Implemented* |
+| `GET /v1/identities`, `POST /v1/identities`, `DELETE /v1/identities/{id}` | The owner's bound sign-in identities; binding uses the identity of the request itself, so `POST` works only through `tailscale serve` from a user-owned device. `201` when new, `200` when already bound, `409 identity_taken` when bound to another owner. *Implemented* |
 | `GET /v1/capabilities` | Version, architecture, hypervisor, and capacity limits. *Implemented* |
 | `POST /v1/recipes` | Validate/store recipe revision |
 | `POST /v1/profiles` | Validate/store user-profile revision |
@@ -58,7 +59,7 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 Long-running mutations return `202 Accepted` with `operation_id` and `environment_id`, and a `Location` header for the operation. The `Idempotency-Key` header carries the idempotency key. Idempotency and serialization rules are in [Operations](./operations.md#interfaces--contracts).
 
 - Request bodies with unknown fields are rejected.
-- Errors are `{"error": {"code", "message", "retryable"}}`. Codes: `unauthorized` (401), `invalid_request` (400), `not_found` (404), and with 409 `name_taken`, `environment_deleted`, `image_not_ready`, `idempotency_conflict`, `capacity_exceeded`, `environment_not_running`; `guest_unreachable` (502, retryable) when the guest's SSH port does not answer. Other failures return `internal_error` (500) without internal detail.
+- Errors are `{"error": {"code", "message", "retryable"}}`. Codes: `unauthorized` (401), `invalid_request` (400), `not_found` (404), and with 409 `name_taken`, `environment_deleted`, `image_not_ready`, `idempotency_conflict`, `capacity_exceeded`, `environment_not_running`, `identity_taken`; `guest_unreachable` (502, retryable) when the guest's SSH port does not answer. Other failures return `internal_error` (500) without internal detail.
 - Operation events are server-sent events: one `step` event per completed step with IDs from 1, then a final `state` event carrying the operation. A client reconnecting with `Last-Event-ID` receives only later events.
 - Capacity limits on environments, vCPUs, memory, and disk count every environment that is not deleted, whether running or stopped; the disk limit also counts retained disks.
 
@@ -73,10 +74,13 @@ Long-running mutations return `202 Accepted` with `operation_id` and `environmen
 
 - `boxface-api bootstrap -owner NAME`, run on the host as the `boxface` user, creates the owner if needed and prints a one-time login code valid for 15 minutes. `POST /v1/login` exchanges it once for an API token.
 - Codes and tokens are stored only as SHA-256 hashes; there is no default password. `DELETE /v1/tokens/{id}` revokes one token; `boxface-api revoke -owner NAME` revokes all of an owner's tokens. Logins, revocations, and SSH tunnel opens are recorded with the client address in `auth_events`.
+- Sign-in methods are pluggable identity providers on top of codes and tokens. A login code works on every listener and is the only method that needs no extra infrastructure, so a public-address host or a hosted service never depends on Tailscale. An *identity* is a `(provider, subject)` pair bound to one owner; `POST /v1/login` without a code signs in with the request's identity and issues an ordinary named token.
+- Tailscale is the first provider, and it is optional. `tailscale serve` strips client-sent identity headers and sets `Tailscale-User-Login` for user-owned devices, so the API trusts that header only on the Tailscale socket. Tagged devices carry no login and must use a code. The owner binds a login with `boxface-api bootstrap -owner NAME -tailscale-login LOGIN` on the host, or with `POST /v1/identities {"provider": "tailscale"}`, which binds the login of the device making the request, so a login cannot be bound without signing in as it. Unbinding stops new identity logins; tokens already issued stay valid until revoked. Identity logins never count toward the login rate limit, since no secret is guessed.
+- An OIDC provider for a hosted version fits the same model: the issuer and `sub` claim become the provider and subject.
 - After 10 failed logins from one address in 10 minutes, `POST /v1/login` returns `429 rate_limited` (retryable, with `Retry-After`) for that address until the window ends.
 - Listeners, any combination: `-listen` (plain HTTP, default `127.0.0.1:7443`, empty disables it); `-tls-listen` with `-tls-domain` (Let's Encrypt over TLS-ALPN-01, so port 443, cached in `-acme-dir`) or `-tls-cert` and `-tls-key`; `-tailscale-socket`, a Unix socket (mode 0600) for `tailscale serve`. Every listener has header and idle timeouts. `X-Forwarded-For` is trusted only on the Tailscale socket, whose proxy is `tailscaled`; it gives the client address for rate limiting and audit.
 - Browser access uses an authenticated secure session and CSRF protection.
-- Full OIDC is deferred.
+- OIDC is deferred.
 
 ### Data Model
 
@@ -86,7 +90,8 @@ Use SQLite transactions for local metadata.
 | --- | --- |
 | Owner | ID, authentication records, permitted bindings, create defaults |
 | API token | ID, owner, SHA-256 hash, client name, creation, last use, revocation |
-| Auth event | Owner, action (`login`, `token.revoke`, `environment.connect`), token ID, target environment for connects, client address, time |
+| Auth event | Owner, action (`login`, `token.revoke`, `identity.bind`, `identity.unbind`, `environment.connect`), token ID, target (the environment for connects, the identity for identity logins and bindings), client address, time |
+| Identity | ID, owner, provider (`tailscale`), subject (the provider's user, such as `alice@github`), creation; each provider and subject is bound to at most one owner |
 | SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
 | Image alias | Name, image ID; repointing never changes existing environments |
 | Recipe revision | ID, source YAML, canonical spec, parent/name, creation time |

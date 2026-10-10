@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
@@ -59,6 +60,8 @@ func (fakeGateway) HostKey(context.Context, string) (string, error) {
 type harness struct {
 	t         *testing.T
 	server    string
+	tailnet   string
+	authStore *auth.Store
 	code      string
 	importDir string
 	config    string
@@ -94,13 +97,20 @@ func newHarness(t *testing.T) *harness {
 			return client, nil
 		},
 	}
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
+	h := s.Handler()
+	srv := httptest.NewServer(h)
+	tailnet := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Tailscale-User-Login", "onat@github")
+		h.ServeHTTP(w, r)
+	}))
+	tailnet.Config.ConnContext = api.ViaTailscale
+	tailnet.Start()
+	t.Cleanup(func() { srv.Close(); tailnet.Close(); cancel(); runner.Wait(); db.Close() })
 	code, err := authStore.Bootstrap(context.Background(), "onat", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{t: t, server: srv.URL, code: code, importDir: importDir, config: filepath.Join(dir, "Application Support", "config.json"), worker: w, runner: runner}
+	return &harness{t: t, server: srv.URL, tailnet: tailnet.URL, authStore: authStore, code: code, importDir: importDir, config: filepath.Join(dir, "Application Support", "config.json"), worker: w, runner: runner}
 }
 
 func (h *harness) run(ctx context.Context, stdin string, interactive bool, args ...string) (int, string, string) {
@@ -366,5 +376,24 @@ func TestTunnelCarriesBytes(t *testing.T) {
 	code, _, errOut := h.run(context.Background(), "", false, "tunnel", env.ID)
 	if code != exitError || !strings.Contains(errOut, "environment_not_running") {
 		t.Fatalf("tunnel to stopped: exit %d, %s", code, errOut)
+	}
+}
+
+func TestLoginWithTailscaleIdentityNeedsNoCode(t *testing.T) {
+	h := newHarness(t)
+	code, _, errOut := h.run(context.Background(), "", false, "login", h.tailnet)
+	if code != exitError || !strings.Contains(errOut, "login code required") {
+		t.Fatalf("unbound identity: exit %d, %s", code, errOut)
+	}
+	if _, err := h.authStore.BindOwnerIdentity(context.Background(), "onat", "tailscale", "onat@github"); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = h.run(context.Background(), "", false, "login", h.tailnet)
+	if code != exitOK || !strings.Contains(errOut, "signed in with your Tailscale login") || !strings.Contains(errOut, "registered SSH key") {
+		t.Fatalf("identity login: exit %d, %s", code, errOut)
+	}
+	h.ok("list")
+	if code, _, errOut := h.run(context.Background(), h.code+"\n", true, "login", h.server); code != exitOK || !strings.Contains(errOut, "logged in") {
+		t.Fatalf("code login on a plain listener: exit %d, %s", code, errOut)
 	}
 }

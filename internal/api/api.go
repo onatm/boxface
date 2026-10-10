@@ -65,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/login", s.login)
 	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
 	authed("GET /v1/capabilities", s.capabilities)
+	authed("GET /v1/identities", s.listIdentities)
+	authed("POST /v1/identities", s.bindIdentity)
+	authed("DELETE /v1/identities/{id}", s.unbindIdentity)
 	authed("GET /v1/tokens", s.listTokens)
 	authed("DELETE /v1/tokens/{id}", s.revokeToken)
 	authed("POST /v1/images", s.importImage)
@@ -131,9 +134,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	token, ownerID, err := s.Auth.Login(r.Context(), req.Code, req.Name, addr)
-	if errors.Is(err, auth.ErrUnauthorized) {
-		s.limiter.fail(addr)
+	var token, ownerID string
+	var err error
+	if req.Code == "" {
+		provider, subject, ok := requestIdentity(r)
+		if !ok {
+			writeError(w, errNoIdentity)
+			return
+		}
+		token, ownerID, err = s.Auth.LoginIdentity(r.Context(), provider, subject, req.Name, addr)
+	} else {
+		token, ownerID, err = s.Auth.Login(r.Context(), req.Code, req.Name, addr)
+		if errors.Is(err, auth.ErrUnauthorized) {
+			s.limiter.fail(addr)
+		}
 	}
 	if err != nil {
 		writeError(w, err)
@@ -153,6 +167,50 @@ func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
 	if err := s.Auth.Revoke(r.Context(), owner(r), r.PathValue("id"), clientAddr(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func tokenID(r *http.Request) string { return r.Context().Value(tokenKey{}).(string) }
+
+func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Auth.Identities(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"identities": list})
+}
+
+func (s *Server) bindIdentity(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	provider, subject, ok := requestIdentity(r)
+	if !ok || req.Provider != provider {
+		writeError(w, fmt.Errorf("%w: binding a %s login needs a request through tailscale serve from a device signed in as that user", auth.ErrInvalidIdentity, req.Provider))
+		return
+	}
+	ident, created, err := s.Auth.BindIdentity(r.Context(), owner(r), provider, subject, tokenID(r), clientAddr(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, ident)
+}
+
+func (s *Server) unbindIdentity(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.UnbindIdentity(r.Context(), owner(r), r.PathValue("id"), tokenID(r), clientAddr(r)); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -415,6 +473,9 @@ func writeError(w http.ResponseWriter, err error) {
 		{errRateLimited, http.StatusTooManyRequests, "rate_limited"},
 		{auth.ErrInvalidName, http.StatusBadRequest, "invalid_request"},
 		{auth.ErrTokenNotFound, http.StatusNotFound, "not_found"},
+		{auth.ErrInvalidIdentity, http.StatusBadRequest, "invalid_request"},
+		{auth.ErrIdentityNotFound, http.StatusNotFound, "not_found"},
+		{auth.ErrIdentityTaken, http.StatusConflict, "identity_taken"},
 		{lifecycle.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidSource, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidAlias, http.StatusBadRequest, "invalid_request"},

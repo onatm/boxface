@@ -53,6 +53,7 @@ type env struct {
 	db        *sql.DB
 	dialed    chan string
 	srv       *httptest.Server
+	tailnet   *httptest.Server
 	authStore *auth.Store
 	runner    *lifecycle.Runner
 	tokens    map[string]string
@@ -89,10 +90,14 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		go func() { io.Copy(guest, guest); guest.Close() }()
 		return client, nil
 	}
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
+	h := s.Handler()
+	srv := httptest.NewServer(h)
+	tailnet := httptest.NewUnstartedServer(h)
+	tailnet.Config.ConnContext = ViaTailscale
+	tailnet.Start()
+	t.Cleanup(func() { srv.Close(); tailnet.Close(); cancel(); runner.Wait(); db.Close() })
 
-	e := &env{t: t, db: db, dialed: dialed, srv: srv, authStore: authStore, runner: runner, tokens: map[string]string{}}
+	e := &env{t: t, db: db, dialed: dialed, srv: srv, tailnet: tailnet, authStore: authStore, runner: runner, tokens: map[string]string{}}
 	e.stage = func(name string) {
 		os.MkdirAll(filepath.Join(importDir, name), 0o755)
 		os.WriteFile(filepath.Join(importDir, name, "vmlinux"), []byte("kernel "+name), 0o644)
@@ -520,4 +525,89 @@ func TestConnectionAndSSHTunnel(t *testing.T) {
 		t.Fatalf("refused tunnel dialed %s", got)
 	default:
 	}
+}
+
+func (e *env) tailnetRequest(who, method, path, login string, body any) (int, map[string]any) {
+	e.t.Helper()
+	b, _ := json.Marshal(body)
+	req, _ := http.NewRequest(method, e.tailnet.URL+path, strings.NewReader(string(b)))
+	if token := e.tokens[who]; token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if login != "" {
+		req.Header.Set("Tailscale-User-Login", login)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func TestTailscaleIdentityLogin(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	noCode := map[string]string{"name": "tablet"}
+
+	for i := 0; i < 12; i++ {
+		e.errorCode("", http.MethodPost, "/v1/login", noCode, http.StatusUnauthorized)
+	}
+	resp := e.request("", http.MethodPost, "/v1/login", noCode, map[string]string{"Tailscale-User-Login": "onat@github"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("identity header off the tailnet socket: status %d", resp.StatusCode)
+	}
+	if status, _ := e.tailnetRequest("", http.MethodPost, "/v1/login", "onat@github", noCode); status != http.StatusUnauthorized {
+		t.Fatalf("unbound login: status %d", status)
+	}
+
+	if code := e.errorCode("one", http.MethodPost, "/v1/identities", map[string]string{"provider": "tailscale"}, http.StatusBadRequest); code != "invalid_request" {
+		t.Fatalf("bind off the tailnet socket: code = %s", code)
+	}
+	if status, _ := e.tailnetRequest("one", http.MethodPost, "/v1/identities", "", map[string]string{"provider": "tailscale"}); status != http.StatusBadRequest {
+		t.Fatalf("bind from a tagged device: status %d", status)
+	}
+	status, ident := e.tailnetRequest("one", http.MethodPost, "/v1/identities", "onat@github", map[string]string{"provider": "tailscale"})
+	if status != http.StatusCreated || ident["subject"] != "onat@github" {
+		t.Fatalf("bind: status %d, %v", status, ident)
+	}
+	if status, _ := e.tailnetRequest("one", http.MethodPost, "/v1/identities", "onat@github", map[string]string{"provider": "tailscale"}); status != http.StatusOK {
+		t.Fatalf("rebind: status %d", status)
+	}
+	if status, body := e.tailnetRequest("two", http.MethodPost, "/v1/identities", "onat@github", map[string]string{"provider": "tailscale"}); status != http.StatusConflict {
+		t.Fatalf("bind by another owner: status %d, %v", status, body)
+	}
+
+	status, login := e.tailnetRequest("", http.MethodPost, "/v1/login", "onat@github", noCode)
+	if status != http.StatusOK || login["token"] == "" {
+		t.Fatalf("identity login: status %d, %v", status, login)
+	}
+	e.tokens["tablet"] = login["token"].(string)
+	var tokens struct {
+		Tokens []auth.Token `json:"tokens"`
+	}
+	e.do("tablet", http.MethodGet, "/v1/tokens", nil, http.StatusOK, &tokens)
+	if len(tokens.Tokens) != 2 || tokens.Tokens[1].Name != "tablet" {
+		t.Fatalf("owner one tokens = %+v", tokens.Tokens)
+	}
+	if status, _ := e.tailnetRequest("", http.MethodPost, "/v1/login", "", noCode); status != http.StatusUnauthorized {
+		t.Fatalf("tailnet login without identity: status %d", status)
+	}
+
+	var list struct {
+		Identities []auth.Identity `json:"identities"`
+	}
+	e.do("one", http.MethodGet, "/v1/identities", nil, http.StatusOK, &list)
+	if len(list.Identities) != 1 {
+		t.Fatalf("identities = %+v", list.Identities)
+	}
+	e.errorCode("two", http.MethodDelete, "/v1/identities/"+list.Identities[0].ID, nil, http.StatusNotFound)
+	e.do("one", http.MethodDelete, "/v1/identities/"+list.Identities[0].ID, nil, http.StatusNoContent, nil)
+	if status, _ := e.tailnetRequest("", http.MethodPost, "/v1/login", "onat@github", noCode); status != http.StatusUnauthorized {
+		t.Fatalf("login after unbind: status %d", status)
+	}
+	code, _ := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
+	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code}, http.StatusOK, nil)
 }

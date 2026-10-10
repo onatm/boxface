@@ -24,7 +24,7 @@ import (
 
 const usage = `usage:
   boxface-api serve [flags]
-  boxface-api bootstrap -owner NAME [-db PATH]
+  boxface-api bootstrap -owner NAME [-tailscale-login LOGIN] [-db PATH]
   boxface-api revoke -owner NAME [-db PATH]
   boxface-api -version`
 
@@ -146,9 +146,12 @@ func reconcile(ctx context.Context, runner *lifecycle.Runner, inv lifecycle.Inve
 	}
 }
 
-func ownerFlags(name string, args []string) (string, string) {
+func ownerFlags(name string, args []string, extra ...func(fs *flag.FlagSet)) (string, string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	owner := fs.String("owner", "", "owner name")
+	for _, f := range extra {
+		f(fs)
+	}
 	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
 	fs.Parse(args)
 	if *owner == "" {
@@ -159,15 +162,25 @@ func ownerFlags(name string, args []string) (string, string) {
 }
 
 func bootstrap(args []string) error {
-	owner, dbPath := ownerFlags("bootstrap", args)
+	var tailscaleLogin string
+	owner, dbPath := ownerFlags("bootstrap", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&tailscaleLogin, "tailscale-login", "", "also let this Tailscale user log in without a code through tailscale serve, such as alice@github")
+	})
 	db, err := store.Open(dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	code, err := auth.New(db).Bootstrap(context.Background(), owner, 15*time.Minute)
+	authStore := auth.New(db)
+	code, err := authStore.Bootstrap(context.Background(), owner, 15*time.Minute)
 	if err != nil {
 		return err
+	}
+	if tailscaleLogin != "" {
+		if _, err := authStore.BindOwnerIdentity(context.Background(), owner, auth.ProviderTailscale, tailscaleLogin); err != nil {
+			return err
+		}
+		fmt.Printf("Tailscale login %s can now log in as %s without a code through tailscale serve\n", tailscaleLogin, owner)
 	}
 	fmt.Printf("one-time login code for %s, valid for 15 minutes:\n%s\n", owner, code)
 	return nil

@@ -106,7 +106,13 @@ Then publish the socket to your tailnet. The first time, Tailscale prints a link
 tailscale serve --bg unix:/var/lib/boxface/api/tailscale.sock
 ```
 
-Clients use `https://<host>.<tailnet>.ts.net`.
+Clients use `https://<host>.<tailnet>.ts.net`. To log in from your tailnet devices without a code, bind your Tailscale login to your owner once:
+
+```sh
+runuser -u boxface -- boxface-api bootstrap -owner <your-name> -tailscale-login <you@github>
+```
+
+`boxfacectl login https://<host>.<tailnet>.ts.net` then signs in with no code. Only the Tailscale socket honours the login, and tagged devices still need a code.
 
 **A public address**, with a Let's Encrypt certificate for a domain that resolves to the host and port 443 open:
 

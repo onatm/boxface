@@ -3,19 +3,33 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/onatm/boxface/internal/auth"
 )
 
-var errRateLimited = errors.New("too many failed logins from this address; try again later")
+var (
+	errRateLimited = errors.New("too many failed logins from this address; try again later")
+	errNoIdentity  = fmt.Errorf("%w: a login code is required; this connection carries no Tailscale login", auth.ErrUnauthorized)
+)
 
 type tailscaleKey struct{}
 
 func ViaTailscale(ctx context.Context, _ net.Conn) context.Context {
 	return context.WithValue(ctx, tailscaleKey{}, true)
+}
+
+func requestIdentity(r *http.Request) (provider, subject string, ok bool) {
+	if via, _ := r.Context().Value(tailscaleKey{}).(bool); !via {
+		return "", "", false
+	}
+	login := r.Header.Get("Tailscale-User-Login")
+	return auth.ProviderTailscale, login, login != ""
 }
 
 func clientAddr(r *http.Request) string {

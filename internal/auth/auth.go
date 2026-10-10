@@ -20,7 +20,20 @@ var (
 	ErrUnauthorized  = errors.New("unauthorized")
 	ErrInvalidName   = errors.New("invalid token name")
 	ErrTokenNotFound = errors.New("token not found")
+
+	ErrInvalidIdentity  = errors.New("invalid identity")
+	ErrIdentityTaken    = errors.New("identity is bound to another owner")
+	ErrIdentityNotFound = errors.New("identity not found")
 )
+
+const ProviderTailscale = "tailscale"
+
+type Identity struct {
+	ID        string `json:"id"`
+	Provider  string `json:"provider"`
+	Subject   string `json:"subject"`
+	CreatedAt string `json:"created_at"`
+}
 
 const lastUsedResolution = time.Minute
 
@@ -90,12 +103,19 @@ func (s *Store) Bootstrap(ctx context.Context, ownerName string, ttl time.Durati
 	return code, tx.Commit()
 }
 
-func (s *Store) Login(ctx context.Context, code, name, remote string) (token, ownerID string, err error) {
+func tokenName(name string) (string, error) {
 	if name == "" {
 		name = "unnamed"
 	}
 	if !validName(name) {
-		return "", "", fmt.Errorf("%w: name must be 1 to 64 printable characters", ErrInvalidName)
+		return "", fmt.Errorf("%w: name must be 1 to 64 printable characters", ErrInvalidName)
+	}
+	return name, nil
+}
+
+func (s *Store) Login(ctx context.Context, code, name, remote string) (token, ownerID string, err error) {
+	if name, err = tokenName(name); err != nil {
+		return "", "", err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -113,23 +133,139 @@ func (s *Store) Login(ctx context.Context, code, name, remote string) (token, ow
 	if err := tx.QueryRowContext(ctx, `SELECT owner_id FROM bootstrap_codes WHERE hash = ?`, hash(code)).Scan(&ownerID); err != nil {
 		return "", "", err
 	}
-	b := make([]byte, 32)
-	rand.Read(b)
-	token = "bfx_" + base64.RawURLEncoding.EncodeToString(b)
-	tokenID := id.New()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO api_tokens (id, owner_id, hash, name, created_at) VALUES (?, ?, ?, ?, ?)`, tokenID, ownerID, hash(token), name, now); err != nil {
-		return "", "", err
-	}
-	if err := s.event(ctx, tx, ownerID, "login", tokenID, remote); err != nil {
+	if token, err = s.issue(ctx, tx, ownerID, name, remote, ""); err != nil {
 		return "", "", err
 	}
 	return token, ownerID, tx.Commit()
 }
 
-func (s *Store) event(ctx context.Context, tx *sql.Tx, ownerID, action, tokenID, remote string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO auth_events (owner_id, action, token_id, remote, created_at) VALUES (?, ?, ?, ?, ?)`,
-		ownerID, action, tokenID, remote, s.timestamp())
+func (s *Store) LoginIdentity(ctx context.Context, provider, subject, name, remote string) (token, ownerID string, err error) {
+	if name, err = tokenName(name); err != nil {
+		return "", "", err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback()
+	err = tx.QueryRowContext(ctx, `SELECT owner_id FROM identities WHERE provider = ? AND subject = ?`, provider, subject).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", fmt.Errorf("%w: %s login %s is not bound to an owner", ErrUnauthorized, provider, subject)
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if token, err = s.issue(ctx, tx, ownerID, name, remote, provider+":"+subject); err != nil {
+		return "", "", err
+	}
+	return token, ownerID, tx.Commit()
+}
+
+func (s *Store) issue(ctx context.Context, tx *sql.Tx, ownerID, name, remote, identity string) (string, error) {
+	b := make([]byte, 32)
+	rand.Read(b)
+	token := "bfx_" + base64.RawURLEncoding.EncodeToString(b)
+	tokenID := id.New()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO api_tokens (id, owner_id, hash, name, created_at) VALUES (?, ?, ?, ?, ?)`, tokenID, ownerID, hash(token), name, s.timestamp()); err != nil {
+		return "", err
+	}
+	return token, s.event(ctx, tx, ownerID, "login", tokenID, identity, remote)
+}
+
+func (s *Store) event(ctx context.Context, tx *sql.Tx, ownerID, action, tokenID, targetID, remote string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO auth_events (owner_id, action, token_id, target_id, remote, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		ownerID, action, tokenID, targetID, remote, s.timestamp())
 	return err
+}
+
+func validSubject(subject string) bool {
+	if subject == "" || len(subject) > 256 {
+		return false
+	}
+	for _, r := range subject {
+		if !unicode.IsPrint(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) BindIdentity(ctx context.Context, ownerID, provider, subject, tokenID, remote string) (Identity, bool, error) {
+	if provider != ProviderTailscale || !validSubject(subject) {
+		return Identity{}, false, fmt.Errorf("%w: %s login %q", ErrInvalidIdentity, provider, subject)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	defer tx.Rollback()
+	ident := Identity{ID: id.New(), Provider: provider, Subject: subject, CreatedAt: s.timestamp()}
+	res, err := tx.ExecContext(ctx, `INSERT INTO identities (id, owner_id, provider, subject, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (provider, subject) DO NOTHING`,
+		ident.ID, ownerID, provider, subject, ident.CreatedAt)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var existingOwner string
+		if err := tx.QueryRowContext(ctx, `SELECT id, owner_id, created_at FROM identities WHERE provider = ? AND subject = ?`, provider, subject).
+			Scan(&ident.ID, &existingOwner, &ident.CreatedAt); err != nil {
+			return Identity{}, false, err
+		}
+		if existingOwner != ownerID {
+			return Identity{}, false, ErrIdentityTaken
+		}
+		return ident, false, nil
+	}
+	if err := s.event(ctx, tx, ownerID, "identity.bind", tokenID, provider+":"+subject, remote); err != nil {
+		return Identity{}, false, err
+	}
+	return ident, true, tx.Commit()
+}
+
+func (s *Store) BindOwnerIdentity(ctx context.Context, ownerName, provider, subject string) (Identity, error) {
+	var ownerID string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM owners WHERE name = ?`, ownerName).Scan(&ownerID); err != nil {
+		return Identity{}, err
+	}
+	ident, _, err := s.BindIdentity(ctx, ownerID, provider, subject, "", "host")
+	return ident, err
+}
+
+func (s *Store) Identities(ctx context.Context, ownerID string) ([]Identity, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, provider, subject, created_at FROM identities WHERE owner_id = ? ORDER BY created_at, rowid`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Identity{}
+	for rows.Next() {
+		var i Identity
+		if err := rows.Scan(&i.ID, &i.Provider, &i.Subject, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, i)
+	}
+	return list, rows.Err()
+}
+
+func (s *Store) UnbindIdentity(ctx context.Context, ownerID, identityID, tokenID, remote string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var provider, subject string
+	err = tx.QueryRowContext(ctx, `DELETE FROM identities WHERE id = ? AND owner_id = ? RETURNING provider, subject`, identityID, ownerID).Scan(&provider, &subject)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrIdentityNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.event(ctx, tx, ownerID, "identity.unbind", tokenID, provider+":"+subject, remote); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Record(ctx context.Context, ownerID, action, tokenID, targetID, remote string) error {
@@ -191,7 +327,7 @@ func (s *Store) Revoke(ctx context.Context, ownerID, tokenID, remote string) err
 	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrTokenNotFound
 	}
-	if err := s.event(ctx, tx, ownerID, "token.revoke", tokenID, remote); err != nil {
+	if err := s.event(ctx, tx, ownerID, "token.revoke", tokenID, "", remote); err != nil {
 		return err
 	}
 	return tx.Commit()

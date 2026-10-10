@@ -160,3 +160,60 @@ func TestLoginRejectsBadNames(t *testing.T) {
 		t.Fatalf("code consumed by rejected names: %v", err)
 	}
 }
+
+func TestIdentityBindingAndLogin(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if _, _, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", "100.64.0.2"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unbound login: err = %v", err)
+	}
+	s.Bootstrap(ctx, "onat", time.Minute)
+	s.Bootstrap(ctx, "other", time.Minute)
+	ident, err := s.BindOwnerIdentity(ctx, "onat", ProviderTailscale, "onat@github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, owner, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", "100.64.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := s.Authenticate(ctx, token); err != nil || got != owner {
+		t.Fatalf("authenticate = %q, %v", got, err)
+	}
+	var target string
+	s.db.QueryRow(`SELECT target_id FROM auth_events WHERE action = 'login' ORDER BY id DESC LIMIT 1`).Scan(&target)
+	if target != "tailscale:onat@github" {
+		t.Fatalf("login event target = %q", target)
+	}
+
+	again, created, err := s.BindIdentity(ctx, owner, ProviderTailscale, "onat@github", "", "")
+	if err != nil || created || again.ID != ident.ID {
+		t.Fatalf("rebind = %+v, %v, %v", again, created, err)
+	}
+	if _, err := s.BindOwnerIdentity(ctx, "other", ProviderTailscale, "onat@github"); !errors.Is(err, ErrIdentityTaken) {
+		t.Fatalf("bind to another owner: err = %v", err)
+	}
+	for _, bad := range [][2]string{{"oidc", "x"}, {ProviderTailscale, ""}, {ProviderTailscale, "a b"}} {
+		if _, _, err := s.BindIdentity(ctx, owner, bad[0], bad[1], "", ""); !errors.Is(err, ErrInvalidIdentity) {
+			t.Fatalf("bind %q: err = %v", bad, err)
+		}
+	}
+	if list, err := s.Identities(ctx, owner); err != nil || len(list) != 1 || list[0].Subject != "onat@github" {
+		t.Fatalf("identities = %+v, %v", list, err)
+	}
+
+	var otherID string
+	s.db.QueryRow(`SELECT id FROM owners WHERE name = 'other'`).Scan(&otherID)
+	if err := s.UnbindIdentity(ctx, otherID, ident.ID, "", ""); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("unbind by another owner: err = %v", err)
+	}
+	if err := s.UnbindIdentity(ctx, owner, ident.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", ""); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("login after unbind: err = %v", err)
+	}
+	if _, _, err := s.Authenticate(ctx, token); err != nil {
+		t.Fatalf("token issued before unbind: %v", err)
+	}
+}

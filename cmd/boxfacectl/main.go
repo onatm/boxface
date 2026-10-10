@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -249,15 +250,26 @@ func (c *cli) login(ctx context.Context, args []string) error {
 		}
 		*server = cfg.Server
 	}
+	api := client.New(*server, "")
+	var token string
 	if *code == "" {
-		var err error
-		if *code, err = c.prompt("Login code: ", "login code"); err != nil {
+		token, err = api.Login(ctx, "", deviceName())
+		var apiErr *client.Error
+		if err != nil && !(errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized) {
 			return err
 		}
+		if err == nil {
+			fmt.Fprintln(c.stderr, "signed in with your Tailscale login")
+		} else {
+			if *code, err = c.prompt("Login code: ", "login code"); err != nil {
+				return err
+			}
+		}
 	}
-	token, err := client.New(*server, "").Login(ctx, *code, deviceName())
-	if err != nil {
-		return err
+	if token == "" {
+		if token, err = api.Login(ctx, *code, deviceName()); err != nil {
+			return err
+		}
 	}
 	b, _ := json.MarshalIndent(config{Server: *server, Token: token}, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.configPath), 0o700); err != nil {

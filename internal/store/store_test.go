@@ -16,7 +16,7 @@ func TestOpenAppliesMigrationsOnce(t *testing.T) {
 		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 			t.Fatal(err)
 		}
-		if applied != 5 {
+		if applied != 6 {
 			t.Fatalf("open %d: %d migrations recorded", i, applied)
 		}
 		var mode string
