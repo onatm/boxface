@@ -272,6 +272,49 @@ func (s *Store) list(ctx context.Context, ownerID, secretID string) ([]Secret, e
 	return list, brows.Err()
 }
 
+func Rekey(ctx context.Context, db *sql.DB, from, to *gosecrets.Keeper) (int, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id, name, ciphertext FROM secrets`)
+	if err != nil {
+		return 0, err
+	}
+	type entry struct {
+		id, name   string
+		ciphertext []byte
+	}
+	var all []entry
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.id, &e.name, &e.ciphertext); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		all = append(all, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, e := range all {
+		plain, err := from.Decrypt(ctx, e.ciphertext)
+		if err != nil {
+			return 0, fmt.Errorf("%w: %s", ErrKey, e.name)
+		}
+		ciphertext, err := to.Encrypt(ctx, plain)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE secrets SET ciphertext = ? WHERE id = ?`, ciphertext, e.id); err != nil {
+			return 0, err
+		}
+	}
+	return len(all), tx.Commit()
+}
+
 type Resolved struct {
 	Env     lifecycle.Credentials
 	Secrets []string

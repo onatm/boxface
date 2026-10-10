@@ -27,6 +27,7 @@ const usage = `usage:
   boxface-api serve [flags]
   boxface-api bootstrap -owner NAME [-tailscale-login LOGIN] [-db PATH]
   boxface-api revoke -owner NAME [-db PATH]
+  boxface-api secrets rekey -from URL -to URL [-db PATH]
   boxface-api -version`
 
 func main() {
@@ -45,6 +46,8 @@ func main() {
 		err = bootstrap(os.Args[2:])
 	case "revoke":
 		err = revoke(os.Args[2:])
+	case "secrets":
+		err = rekey(os.Args[2:])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -66,7 +69,7 @@ func serve(args []string) error {
 	fs.StringVar(&lc.acmeDir, "acme-dir", "/var/lib/boxface/api/acme", "directory caching Let's Encrypt account and certificates")
 	fs.StringVar(&lc.tailscaleSocket, "tailscale-socket", "", "Unix socket for tailscale serve, such as /var/lib/boxface/api/tailscale.sock")
 	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
-	keeperURL := fs.String("secrets-keeper", "file:///var/lib/boxface/api/secrets.key", "key that encrypts stored credentials: a file:// key file, created if missing, or a Go CDK keeper URL")
+	keeperURL := fs.String("secrets-keeper", "file:///var/lib/boxface/api/secrets.key", "key that encrypts stored credentials: file:///path (a local key, created if missing), awskms://, gcpkms://, azurekeyvault://, or hashivault:// (Vault or OpenBao Transit)")
 	workerSocket := fs.String("worker-socket", "/run/boxface/worker.sock", "host worker socket")
 	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
 	imagesDir := fs.String("images-dir", "/var/lib/boxface/images", "directory holding image artifact sets")
@@ -213,6 +216,44 @@ func bootstrap(args []string) error {
 		fmt.Printf("Tailscale login %s can now log in as %s without a code through tailscale serve\n", tailscaleLogin, owner)
 	}
 	fmt.Printf("one-time login code for %s, valid for 15 minutes:\n%s\n", owner, code)
+	return nil
+}
+
+func rekey(args []string) error {
+	if len(args) == 0 || args[0] != "rekey" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	fs := flag.NewFlagSet("secrets rekey", flag.ExitOnError)
+	from := fs.String("from", "", "keeper URL the stored credentials are encrypted with now")
+	to := fs.String("to", "", "keeper URL to re-encrypt them with; then start serve with -secrets-keeper set to it")
+	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
+	fs.Parse(args[1:])
+	if *from == "" || *to == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	ctx := context.Background()
+	db, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	old, err := secrets.OpenKeeper(ctx, *from)
+	if err != nil {
+		return err
+	}
+	defer old.Close()
+	next, err := secrets.OpenKeeper(ctx, *to)
+	if err != nil {
+		return err
+	}
+	defer next.Close()
+	n, err := secrets.Rekey(ctx, db, old, next)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("re-encrypted %d credentials\n", n)
 	return nil
 }
 

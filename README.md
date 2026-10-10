@@ -195,6 +195,24 @@ Instead of signing in to an agent in every environment, save a credential once o
 
 Changes apply at the next agent launch, with no restart. Values are encrypted on the server, never shown again, and never written to disk in the environment. To run an agent without stored credentials, call it directly, for example `/opt/boxface/profile/bin/claude`. Environments need an image built after this feature; older images run agents without stored credentials.
 
+### Credential encryption
+
+Stored credentials are encrypted with [Go CDK `secrets`](https://gocloud.dev/howto/secrets/). The operator chooses the key with `-secrets-keeper` in the service override:
+
+| Keeper | `-secrets-keeper` |
+|---|---|
+| Local key file (default) | `file:///var/lib/boxface/api/secrets.key` |
+| AWS KMS | `awskms://<key-id-or-alias>?region=<region>` |
+| Google Cloud KMS | `gcpkms://projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>` |
+| Azure Key Vault | `azurekeyvault://<vault>.vault.azure.net/keys/<key>` |
+| HashiCorp Vault or OpenBao Transit | `hashivault://<key>`, with `VAULT_SERVER_URL` and `VAULT_SERVER_TOKEN` in the service environment |
+
+Cloud keepers read credentials the usual way for their SDK (instance roles, workload identity, or environment variables). To switch keepers, stop `boxface-api`, re-encrypt, then start it with the new URL:
+
+```sh
+runuser -u boxface -- boxface-api secrets rekey -from file:///var/lib/boxface/api/secrets.key -to 'awskms://alias/boxface?region=eu-west-1'
+```
+
 ### Behaviour to know
 
 - **Stopping and starting:** stopping shuts the guest down cleanly and keeps its disk. Starting boots the same disk again.
@@ -211,7 +229,7 @@ Changes apply at the next agent launch, with no restart. Values are encrypted on
 | Service logs | `journalctl -u boxface-api -u boxface-worker` |
 | A VM's console | `journalctl -u boxface-vm-<environment-id>` |
 | Database | `/var/lib/boxface/api/boxface.db` (SQLite, owned by `boxface`) |
-| Credential key | `/var/lib/boxface/api/secrets.key` (created on first start, mode 0600). Back it up separately from the database: without it, stored credentials cannot be decrypted and must be entered again. `-secrets-keeper` can point at another key file or a Go CDK keeper URL |
+| Credential key | `/var/lib/boxface/api/secrets.key` (created on first start, mode 0600). Back it up separately from the database: without it, stored credentials cannot be decrypted and must be entered again. See [Credential encryption](#credential-encryption) to use a KMS instead |
 | Images | `/var/lib/boxface/images/<image-id>/` |
 | Data disks | `/var/lib/boxface/disks/<disk-id>.ext4` |
 | Runtime state | `/var/lib/boxface/environments/<environment-id>/` |

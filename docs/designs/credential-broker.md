@@ -33,7 +33,7 @@ Decided by the owner on 2026-10-10: built in, using an open-source secret store 
 
 | Option | License | Verdict |
 |---|---|---|
-| **Go CDK `secrets` (`gocloud.dev/secrets`)** | Apache-2.0 | **Chosen.** Envelope encryption inside `boxface-api`, ciphertext in SQLite. The keeper is a URL: `base64key://` (a host key file readable only by `boxface`) for self-hosted installs, and AWS KMS, GCP KMS, Azure Key Vault, or Vault/OpenBao Transit for a hosted version, with no change to stored records beyond re-wrapping. No new service to run on a single host |
+| **Go CDK `secrets` (`gocloud.dev/secrets`)** | Apache-2.0 | **Chosen.** Envelope encryption inside `boxface-api`, ciphertext in SQLite. The keeper is a URL: `base64key://` (a host key file readable only by `boxface`) for self-hosted installs, and AWS KMS, GCP KMS, Azure Key Vault, or Vault/OpenBao Transit for a hosted version, with no change to stored records beyond re-wrapping. No new service to run on a single host. All four KMS drivers are compiled in (about 15 MB of the 30 MB binary), so the platform owner picks the keeper with `-secrets-keeper` at install time; `boxface-api secrets rekey` moves stored values between keepers |
 | OpenBao | MPL-2.0 | Later provider. A Linux Foundation fork of Vault: single binary, Raft or PostgreSQL storage, KMS auto-unseal plugins, and per-tenant namespace sealing (v2.6–2.7), which suits a multi-tenant hosted version; requiring it would add a service to run and unseal after every reboot |
 | Infisical | MIT core | Not chosen: needs PostgreSQL and Redis, with 4–8 GB of memory recommended |
 | 1Password service accounts | Proprietary | Later provider; validated in Gate C |

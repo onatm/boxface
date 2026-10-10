@@ -161,3 +161,31 @@ func TestWrongKeyFailsClearly(t *testing.T) {
 		t.Fatal("a short key file was accepted")
 	}
 }
+
+func TestRekey(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, "owner-1", "claude", claudeToken, claudeBinding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(ctx, "owner-2", "openai", "sk-two", []Binding{{"codex", "OPENAI_API_KEY"}}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := OpenKeeper(ctx, "file://"+filepath.Join(t.TempDir(), "next.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rekey(ctx, s.db, next, s.keeper); !errors.Is(err, ErrKey) {
+		t.Fatalf("rekey from the wrong key: err = %v", err)
+	}
+	if n, err := Rekey(ctx, s.db, s.keeper, next); err != nil || n != 2 {
+		t.Fatalf("rekey = %d, %v", n, err)
+	}
+	if _, err := s.Resolve(ctx, "owner-1"); !errors.Is(err, ErrKey) {
+		t.Fatalf("old key still decrypts: %v", err)
+	}
+	moved := NewStore(s.db, next)
+	if r, err := moved.Resolve(ctx, "owner-1"); err != nil || r.Env["claude-code"]["CLAUDE_CODE_OAUTH_TOKEN"] != claudeToken {
+		t.Fatalf("after rekey = %+v, %v", r, err)
+	}
+}
