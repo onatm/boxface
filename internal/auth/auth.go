@@ -93,14 +93,49 @@ func (s *Store) Bootstrap(ctx context.Context, ownerName string, ttl time.Durati
 		return "", err
 	}
 
+	code, err := s.newCode(ctx, tx, ownerID, ttl)
+	if err != nil {
+		return "", err
+	}
+	return code, tx.Commit()
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *Store) newCode(ctx context.Context, db execer, ownerID string, ttl time.Duration) (string, error) {
 	b := make([]byte, 20)
 	rand.Read(b)
 	code := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
 	expires := s.now().Add(ttl).UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO bootstrap_codes (hash, owner_id, expires_at) VALUES (?, ?, ?)`, hash(code), ownerID, expires); err != nil {
+	_, err := db.ExecContext(ctx, `INSERT INTO bootstrap_codes (hash, owner_id, expires_at) VALUES (?, ?, ?)`, hash(code), ownerID, expires)
+	return code, err
+}
+
+func (s *Store) IssueCode(ctx context.Context, ownerID string, ttl time.Duration) (string, error) {
+	return s.newCode(ctx, s.db, ownerID, ttl)
+}
+
+func (s *Store) redeemCode(ctx context.Context, tx *sql.Tx, code string) (ownerID string, err error) {
+	now := s.timestamp()
+	res, err := tx.ExecContext(ctx, `UPDATE bootstrap_codes SET used_at = ? WHERE hash = ? AND used_at IS NULL AND expires_at > ?`, now, hash(code), now)
+	if err != nil {
 		return "", err
 	}
-	return code, tx.Commit()
+	if n, _ := res.RowsAffected(); n != 1 {
+		return "", ErrUnauthorized
+	}
+	err = tx.QueryRowContext(ctx, `SELECT owner_id FROM bootstrap_codes WHERE hash = ?`, hash(code)).Scan(&ownerID)
+	return ownerID, err
+}
+
+func identityOwner(ctx context.Context, tx *sql.Tx, provider, subject string) (ownerID string, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT owner_id FROM identities WHERE provider = ? AND subject = ?`, provider, subject).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: %s login %s is not bound to an owner", ErrUnauthorized, provider, subject)
+	}
+	return ownerID, err
 }
 
 func tokenName(name string) (string, error) {
@@ -122,15 +157,7 @@ func (s *Store) Login(ctx context.Context, code, name, remote string) (token, ow
 		return "", "", err
 	}
 	defer tx.Rollback()
-	now := s.timestamp()
-	res, err := tx.ExecContext(ctx, `UPDATE bootstrap_codes SET used_at = ? WHERE hash = ? AND used_at IS NULL AND expires_at > ?`, now, hash(code), now)
-	if err != nil {
-		return "", "", err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return "", "", ErrUnauthorized
-	}
-	if err := tx.QueryRowContext(ctx, `SELECT owner_id FROM bootstrap_codes WHERE hash = ?`, hash(code)).Scan(&ownerID); err != nil {
+	if ownerID, err = s.redeemCode(ctx, tx, code); err != nil {
 		return "", "", err
 	}
 	if token, err = s.issue(ctx, tx, ownerID, name, remote, ""); err != nil {
@@ -148,11 +175,7 @@ func (s *Store) LoginIdentity(ctx context.Context, provider, subject, name, remo
 		return "", "", err
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT owner_id FROM identities WHERE provider = ? AND subject = ?`, provider, subject).Scan(&ownerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", fmt.Errorf("%w: %s login %s is not bound to an owner", ErrUnauthorized, provider, subject)
-	}
-	if err != nil {
+	if ownerID, err = identityOwner(ctx, tx, provider, subject); err != nil {
 		return "", "", err
 	}
 	if token, err = s.issue(ctx, tx, ownerID, name, remote, provider+":"+subject); err != nil {

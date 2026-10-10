@@ -12,8 +12,9 @@ Early and single-owner. What works today:
 - Environments can be created, listed, inspected, started, stopped, deleted, and purged through the API or `boxfacectl`, and survive API, worker, and host restarts ([acceptance results](docs/research/2026-10-lifecycle.md)).
 - Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet.
 - `boxfacectl connect` reaches an environment's SSH through the API, with a host key pinned at creation, and attaches to a tmux session.
+- A web UI for configuration: setup checklist, images and the `main` alias, defaults, SSH keys, client logins, and the environment list.
 
-Not yet built: session records, credential delivery to sessions, image builds through the API, backups, upgrades, and a web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
+Not yet built: session records, credential delivery to sessions, image builds through the API, backups, upgrades, and environment actions in the web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
 
 ## Requirements
 
@@ -72,21 +73,17 @@ Run these as root on the host.
    deploy/install.sh bin/linux-amd64
    ```
 
-   This creates the `boxface` and `boxface-vm` system users and `/var/lib/boxface`. It then installs both services, enables them and starts them. The API listens on `127.0.0.1:7443`.
+   This creates the `boxface` and `boxface-vm` system users and `/var/lib/boxface`. It then installs both services, enables them and starts them. The API listens on `127.0.0.1:7443`. On the first install it also creates your owner (`$BOXFACE_OWNER`, else the `sudo` user) and prints a setup URL with a one-time code, valid for 15 minutes. If it expires, create another code with `runuser -u boxface -- boxface-api bootstrap -owner <your-name>` and open `/login?code=<code>`.
 
-2. Create a one-time login code, valid for 15 minutes:
-
-   ```sh
-   runuser -u boxface -- boxface-api bootstrap -owner <your-name>
-   ```
-
-3. Register the image. Move it into the import directory, then register it from the client, as shown in the next section:
+2. Stage the image in the import directory:
 
    ```sh
    mkdir /var/lib/boxface/import/base
    cp /var/tmp/boxface-gate-c/out/{vmlinux,rootfs.ext4} /var/lib/boxface/import/base/
    chown -R boxface:boxface /var/lib/boxface/import/base
    ```
+
+3. Expose the API (next section), then open the setup URL. The setup page walks through registering the staged image as `main`, adding an SSH key, reviewing default sizes, and creating a login code for each client device.
 
 ## Expose the API
 
@@ -112,7 +109,7 @@ Clients use `https://<host>.<tailnet>.ts.net`. To log in from your tailnet devic
 runuser -u boxface -- boxface-api bootstrap -owner <your-name> -tailscale-login <you@github>
 ```
 
-`boxfacectl login https://<host>.<tailnet>.ts.net` then signs in with no code. Only the Tailscale socket honours the login, and tagged devices still need a code.
+`boxfacectl login https://<host>.<tailnet>.ts.net` and the web UI then sign in with no code. You can also bind your login from the web UI's Clients page when you open it through Tailscale. Only the Tailscale socket honours the login, and tagged devices still need a code.
 
 **A public address**, with a Let's Encrypt certificate for a domain that resolves to the host and port 443 open:
 
@@ -135,13 +132,15 @@ After 10 failed logins from one address, that address can't log in until 10 minu
 
 ## Use
 
-Log in with the code from step 2 of the install, and register the image staged in step 3:
+The web UI at the API's address (`/`) is for configuration: images, default sizes, SSH keys, client logins, and a read-only list of environments with their `connect` commands. `boxfacectl` provisions and connects.
+
+Log in with a code from the web UI's Clients page:
 
 ```sh
 boxfacectl login https://<host>.<tailnet>.ts.net          # or https://boxface.example.com, or http://127.0.0.1:7443 over a tunnel
-boxfacectl image import base --alias main                 # hashes and registers it as the default image
-boxfacectl image list
 ```
+
+Images can also be registered from the CLI: `boxfacectl image import base --alias main`, then `boxfacectl image list`.
 
 `login` also creates an SSH key for this device (`id_ed25519` next to the login file) and registers its public key with the server. New environments accept the keys registered when they are created.
 

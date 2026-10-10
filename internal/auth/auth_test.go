@@ -217,3 +217,53 @@ func TestIdentityBindingAndLogin(t *testing.T) {
 		t.Fatalf("token issued before unbind: %v", err)
 	}
 }
+
+func TestWebSessions(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
+	secret, owner, err := s.WebLogin(ctx, code, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.WebLogin(ctx, code, "127.0.0.1"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("code reused for a session: err = %v", err)
+	}
+	got, sessionID, err := s.AuthenticateSession(ctx, secret)
+	if err != nil || got != owner || !strings.HasPrefix(sessionID, "web:") {
+		t.Fatalf("authenticate = %q, %q, %v", got, sessionID, err)
+	}
+	if _, _, err := s.Authenticate(ctx, secret); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("a session secret works as an API token")
+	}
+	if name, err := s.OwnerName(ctx, owner); err != nil || name != "onat" {
+		t.Fatalf("owner name = %q, %v", name, err)
+	}
+
+	s.now = func() time.Time { return time.Now().Add(SessionTTL + time.Minute) }
+	if _, _, err := s.AuthenticateSession(ctx, secret); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expired session: err = %v", err)
+	}
+	s.now = time.Now
+
+	if _, _, err := s.WebLoginIdentity(ctx, ProviderTailscale, "onat@github", ""); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unbound identity session: err = %v", err)
+	}
+	s.BindOwnerIdentity(ctx, "onat", ProviderTailscale, "onat@github")
+	if bound, _ := s.IdentityBound(ctx, ProviderTailscale, "onat@github"); !bound {
+		t.Fatal("identity not reported bound")
+	}
+	other, _, err := s.WebLoginIdentity(ctx, ProviderTailscale, "onat@github", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndSession(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AuthenticateSession(ctx, other); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ended session: err = %v", err)
+	}
+	if _, _, err := s.AuthenticateSession(ctx, secret); err != nil {
+		t.Fatalf("ending one session ended another: %v", err)
+	}
+}

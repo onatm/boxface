@@ -89,6 +89,38 @@ func (r *Registry) Import(ctx context.Context, source string) (Image, bool, erro
 	return img, true, nil
 }
 
+type Staged struct {
+	Source  string `json:"source"`
+	SizeMiB int64  `json:"size_mib"`
+}
+
+func (r *Registry) Staged() ([]Staged, error) {
+	entries, err := os.ReadDir(r.importDir)
+	if err != nil {
+		return nil, err
+	}
+	list := []Staged{}
+	for _, e := range entries {
+		if !e.IsDir() || !sourcePattern.MatchString(e.Name()) {
+			continue
+		}
+		staged := Staged{Source: e.Name()}
+		complete := true
+		for _, name := range artifacts {
+			info, err := os.Lstat(filepath.Join(r.importDir, e.Name(), name))
+			if err != nil || !info.Mode().IsRegular() {
+				complete = false
+				break
+			}
+			staged.SizeMiB += info.Size() >> 20
+		}
+		if complete {
+			list = append(list, staged)
+		}
+	}
+	return list, nil
+}
+
 func (r *Registry) byDigest(ctx context.Context, digest string) (Image, error) {
 	img := Image{Digest: digest}
 	err := r.db.QueryRowContext(ctx, `SELECT id, status, created_at FROM images WHERE digest = ?`, digest).Scan(&img.ID, &img.Status, &img.CreatedAt)

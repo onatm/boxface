@@ -29,6 +29,8 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | --- | --- |
 | `GET /health` | Minimal liveness; no sensitive metadata. *Implemented* |
 | `POST /v1/login` | Exchange a one-time bootstrap code for an API token, `{"code", "name"}`; the name identifies the client. Without a code, sign in with the request's bound identity (Tailscale socket only). *Implemented* |
+| `POST /v1/login-codes` | Issue a one-time login code for the owner, valid 15 minutes, for a new device. *Implemented* |
+| `GET /web/session`, `POST /web/login`, `POST /web/logout` | Web UI sign-in: `POST /web/login` takes `{"code"}`, or no code for a bound identity on the Tailscale socket, and sets an `HttpOnly`, `SameSite=Strict` session cookie; the cookie authenticates `/v1` requests like a token. `GET /web/session` reports whether the browser is signed in and the request's Tailscale login, if any. *Implemented* |
 | `GET /v1/tokens`, `DELETE /v1/tokens/{id}` | List the owner's active tokens with name, creation, last use (to the minute), and which one made the request; revoke one. *Implemented* |
 | `GET /v1/identities`, `POST /v1/identities`, `DELETE /v1/identities/{id}` | The owner's bound sign-in identities; binding uses the identity of the request itself, so `POST` works only through `tailscale serve` from a user-owned device. `201` when new, `200` when already bound, `409 identity_taken` when bound to another owner. *Implemented* |
 | `GET /v1/capabilities` | Version, architecture, hypervisor, and capacity limits. *Implemented* |
@@ -37,8 +39,9 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | `POST /v1/images/build` | Create asynchronous image-build operation |
 | `POST /v1/images` | Register an artifact set staged in the import directory, `{"source": "<name>"}`; `201` when new, `200` with the existing image when the content digest matches. *Implemented* |
 | `GET /v1/images` | List ready/failed image revisions with their aliases. *Implemented* |
+| `GET /v1/image-imports` | Directories in the import directory holding both artifacts, ready to register. *Implemented* |
 | `PUT /v1/image-aliases/{name}` | Point an alias such as `main` at an image, `{"image_id": "..."}`; existing environments keep their image. *Implemented* |
-| `GET /v1/defaults`, `PUT /v1/defaults` | The owner's create defaults: `image` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`. Without saved defaults: `main`, 2, 2048, 20. *Implemented* |
+| `GET /v1/defaults`, `PUT /v1/defaults` | The owner's create defaults: `image` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`. Without saved defaults: `main`, 2, 2048, 20. `GET` adds `saved`. *Implemented* |
 | `GET /v1/ssh-keys`, `POST /v1/ssh-keys`, `DELETE /v1/ssh-keys/{id}` | The owner's SSH public keys, `{"name", "public_key"}`; one key line without options; `201` when new, `200` with the existing key when the fingerprint matches. *Implemented* |
 | `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name` and optional `image_id` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`; omitted fields come from the owner's defaults, are resolved once, and the environment records the concrete values. The owner's SSH keys at submission are seeded into the new disk; a create with no registered key is rejected |
 | `GET /v1/environments` | List authorised environments, including deleted ones whose disk is retained. *Implemented* |
@@ -79,7 +82,7 @@ Long-running mutations return `202 Accepted` with `operation_id` and `environmen
 - An OIDC provider for a hosted version fits the same model: the issuer and `sub` claim become the provider and subject.
 - After 10 failed logins from one address in 10 minutes, `POST /v1/login` returns `429 rate_limited` (retryable, with `Retry-After`) for that address until the window ends.
 - Listeners, any combination: `-listen` (plain HTTP, default `127.0.0.1:7443`, empty disables it); `-tls-listen` with `-tls-domain` (Let's Encrypt over TLS-ALPN-01, so port 443, cached in `-acme-dir`) or `-tls-cert` and `-tls-key`; `-tailscale-socket`, a Unix socket (mode 0600) for `tailscale serve`. Every listener has header and idle timeouts. `X-Forwarded-For` is trusted only on the Tailscale socket, whose proxy is `tailscaled`; it gives the client address for rate limiting and audit.
-- Browser access uses an authenticated secure session and CSRF protection.
+- Browser access uses a session cookie (`web_sessions`, hashed, 30 days) and `http.CrossOriginProtection` on every request; see [Web UI](./web-ui.md#security--privacy).
 - OIDC is deferred.
 
 ### Data Model
@@ -91,6 +94,7 @@ Use SQLite transactions for local metadata.
 | Owner | ID, authentication records, permitted bindings, create defaults |
 | API token | ID, owner, SHA-256 hash, client name, creation, last use, revocation |
 | Auth event | Owner, action (`login`, `token.revoke`, `identity.bind`, `identity.unbind`, `environment.connect`), token ID, target (the environment for connects, the identity for identity logins and bindings), client address, time |
+| Web session | ID, owner, SHA-256 hash, creation, expiry, end |
 | Identity | ID, owner, provider (`tailscale`), subject (the provider's user, such as `alice@github`), creation; each provider and subject is bound to at most one owner |
 | SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
 | Image alias | Name, image ID; repointing never changes existing environments |

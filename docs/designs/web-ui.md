@@ -1,6 +1,6 @@
 # Web UI
 
-**Status:** Draft — proposed design
+**Status:** Draft — configuration pages implemented ([connect plan](../plans/2026-10-connect-and-web-ui.md#web-ui-scope), C6); recipes, profiles, and environment actions proposed
 
 ---
 
@@ -26,9 +26,17 @@ Server status, recipe/profile revisions, environment creation, environment detai
 - The UI separates stop, delete-with-data-retained, and purge.
 - It never displays resolved credential values.
 
+### Implemented Pages
+
+`boxface-api` serves the UI at `/` from static HTML, CSS, and JavaScript embedded in the binary, with no build step. It calls the `/v1` API with `fetch`, like the CLI. Pages: Setup (a checklist: SSH key, `main` image, saved defaults, a CLI login), Images (register staged imports; move `main`), Defaults (with host limits), SSH keys, Clients (issue a CLI login code with the exact `boxfacectl login` command; revoke logins; bind or unbind a Tailscale login), and Environments (read-only, with state, whether `main` has moved since creation, and the `connect` command). Registering the first image also points `main` at it.
+
 ### Security & Privacy
 
-Browser access uses an authenticated secure session and CSRF protection. See [Boxface API](./api.md#authentication).
+- Sign-in is a one-time code (from `install.sh`, `boxface-api bootstrap`, or the Clients page), exchanged by `POST /web/login` for a session cookie, or a bound Tailscale login on the Tailscale socket, which signs in automatically. `/login?code=…` signs in and removes the code from the address bar.
+- Sessions are stored as SHA-256 hashes in `web_sessions`, last 30 days, and end on sign-out. The cookie is `HttpOnly`, `SameSite=Strict`, and `Secure` over HTTPS or Tailscale. Session secrets are not API tokens and API tokens are not accepted as cookies.
+- Every API request goes through Go's `http.CrossOriginProtection`, which rejects cross-origin state-changing requests from browsers; the CLI sends no browser headers and is unaffected.
+- Pages are served with a `default-src 'self'` content security policy, `frame-ancestors 'none'`, `no-referrer`, and `no-store`. The UI builds the DOM without HTML strings, so API data is never parsed as markup.
+- It never displays secret values other than a login code the owner just created.
 
 ## References
 

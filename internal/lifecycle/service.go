@@ -208,6 +208,12 @@ func (s *Service) Defaults(ctx context.Context, ownerID string) (Defaults, error
 	return defaults(ctx, s.db, ownerID)
 }
 
+func (s *Service) DefaultsSaved(ctx context.Context, ownerID string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM owner_defaults WHERE owner_id = ?`, ownerID).Scan(&n)
+	return n > 0, err
+}
+
 func (s *Service) SetDefaults(ctx context.Context, ownerID string, d Defaults) error {
 	if d.Image == "" || d.VCPUs < 1 || d.MemoryMiB < 128 || d.DiskGiB < 1 {
 		return fmt.Errorf("%w: image is required; vcpus must be at least 1, memory_mib at least 128, disk_gib at least 1", ErrInvalid)

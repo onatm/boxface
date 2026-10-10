@@ -63,15 +63,18 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("POST /v1/login", s.login)
+	s.webRoutes(mux)
 	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
 	authed("GET /v1/capabilities", s.capabilities)
 	authed("GET /v1/identities", s.listIdentities)
 	authed("POST /v1/identities", s.bindIdentity)
 	authed("DELETE /v1/identities/{id}", s.unbindIdentity)
+	authed("POST /v1/login-codes", s.issueLoginCode)
 	authed("GET /v1/tokens", s.listTokens)
 	authed("DELETE /v1/tokens/{id}", s.revokeToken)
 	authed("POST /v1/images", s.importImage)
 	authed("GET /v1/images", s.listImages)
+	authed("GET /v1/image-imports", s.listStaged)
 	authed("PUT /v1/image-aliases/{name}", s.setImageAlias)
 	authed("GET /v1/defaults", s.getDefaults)
 	authed("PUT /v1/defaults", s.setDefaults)
@@ -88,17 +91,20 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/environments/{id}/ssh", s.sshTunnel)
 	authed("GET /v1/operations/{id}", s.getOperation)
 	authed("GET /v1/operations/{id}/events", s.operationEvents)
-	return mux
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			writeError(w, auth.ErrUnauthorized)
-			return
+		var owner, tokenID string
+		var err error
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && token != "" {
+			owner, tokenID, err = s.Auth.Authenticate(r.Context(), token)
+		} else if c, cerr := r.Cookie(sessionCookie); cerr == nil {
+			owner, tokenID, err = s.Auth.AuthenticateSession(r.Context(), c.Value)
+		} else {
+			err = auth.ErrUnauthorized
 		}
-		owner, tokenID, err := s.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -281,7 +287,15 @@ func (s *Server) getDefaults(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	saved, err := s.Lifecycle.DefaultsSaved(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		lifecycle.Defaults
+		Saved bool `json:"saved"`
+	}{d, saved})
 }
 
 func (s *Server) setDefaults(w http.ResponseWriter, r *http.Request) {

@@ -611,3 +611,178 @@ func TestTailscaleIdentityLogin(t *testing.T) {
 	code, _ := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
 	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code}, http.StatusOK, nil)
 }
+
+func (e *env) web(base, method, path string, body any, header map[string]string) *http.Response {
+	e.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		reader = strings.NewReader(string(b))
+	}
+	req, _ := http.NewRequest(method, base+path, reader)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resp
+}
+
+func sessionCookieOf(t *testing.T, resp *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == "boxface_session" {
+			return c
+		}
+	}
+	t.Fatalf("no session cookie; status %d", resp.StatusCode)
+	return nil
+}
+
+func TestWebUIAssetsAndHeaders(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	for path, want := range map[string]string{"/": "/assets/app.js", "/login?code=x": "/assets/app.js", "/assets/app.js": "function h(", "/assets/app.css": "--accent"} {
+		resp := e.web(e.srv.URL, http.MethodGet, path, nil, nil)
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.Contains(string(b), want) {
+			t.Fatalf("%s: status %d, body lacks %q", path, resp.StatusCode, want)
+		}
+		if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || !strings.Contains(csp, "frame-ancestors 'none'") {
+			t.Fatalf("%s: CSP = %q", path, csp)
+		}
+	}
+	resp := e.web(e.srv.URL, http.MethodGet, "/assets/missing.js", nil, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing asset: status %d", resp.StatusCode)
+	}
+}
+
+func TestWebSessionWithCode(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	code, _ := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
+	resp := e.web(e.srv.URL, http.MethodPost, "/web/login", map[string]string{"code": code}, nil)
+	resp.Body.Close()
+	cookie := sessionCookieOf(t, resp)
+	if resp.StatusCode != http.StatusNoContent || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode || cookie.Secure {
+		t.Fatalf("status %d, cookie %+v", resp.StatusCode, cookie)
+	}
+	withCookie := map[string]string{"Cookie": "boxface_session=" + cookie.Value}
+
+	resp = e.web(e.srv.URL, http.MethodGet, "/web/session", nil, withCookie)
+	var s map[string]any
+	json.NewDecoder(resp.Body).Decode(&s)
+	resp.Body.Close()
+	if s["signed_in"] != true || s["owner"] != "one" || s["identity"] != nil {
+		t.Fatalf("session = %v", s)
+	}
+	resp = e.web(e.srv.URL, http.MethodGet, "/v1/ssh-keys", nil, withCookie)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie on the API: status %d", resp.StatusCode)
+	}
+
+	addKey := map[string]string{"name": "x", "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOq2xfvbqUt8h+zr6rSKLYq3Fp6Hv1ZAjjoWlWZkZXIi"}
+	for name, extra := range map[string]map[string]string{
+		"cross-site fetch":  {"Sec-Fetch-Site": "cross-site"},
+		"foreign origin":    {"Origin": "https://evil.example"},
+		"same-site subhost": {"Sec-Fetch-Site": "same-site"},
+	} {
+		h := map[string]string{"Cookie": withCookie["Cookie"]}
+		for k, v := range extra {
+			h[k] = v
+		}
+		resp := e.web(e.srv.URL, http.MethodPost, "/v1/ssh-keys", addKey, h)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: status %d, want 403", name, resp.StatusCode)
+		}
+	}
+	resp = e.web(e.srv.URL, http.MethodPost, "/v1/ssh-keys", addKey, map[string]string{"Cookie": withCookie["Cookie"], "Sec-Fetch-Site": "same-origin"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("same-origin POST: status %d", resp.StatusCode)
+	}
+
+	var codeResp map[string]string
+	resp = e.web(e.srv.URL, http.MethodPost, "/v1/login-codes", nil, withCookie)
+	json.NewDecoder(resp.Body).Decode(&codeResp)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || codeResp["code"] == "" {
+		t.Fatalf("login code: status %d, %v", resp.StatusCode, codeResp)
+	}
+	var login map[string]string
+	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": codeResp["code"], "name": "phone"}, http.StatusOK, &login)
+	if login["owner_id"] == "" {
+		t.Fatalf("login with a web-issued code = %v", login)
+	}
+
+	resp = e.web(e.srv.URL, http.MethodPost, "/web/logout", nil, withCookie)
+	resp.Body.Close()
+	if c := sessionCookieOf(t, resp); c.MaxAge >= 0 {
+		t.Fatalf("logout cookie = %+v", c)
+	}
+	resp = e.web(e.srv.URL, http.MethodGet, "/v1/ssh-keys", nil, withCookie)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after logout: status %d", resp.StatusCode)
+	}
+	resp = e.web(e.srv.URL, http.MethodPost, "/web/login", map[string]string{"code": code}, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("reused code: status %d", resp.StatusCode)
+	}
+}
+
+func TestWebSessionWithTailscaleIdentity(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	ts := map[string]string{"Tailscale-User-Login": "onat@github"}
+	resp := e.web(e.srv.URL, http.MethodPost, "/web/login", map[string]string{}, ts)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("identity header off the socket: status %d", resp.StatusCode)
+	}
+	resp = e.web(e.tailnet.URL, http.MethodGet, "/web/session", nil, ts)
+	var s map[string]any
+	json.NewDecoder(resp.Body).Decode(&s)
+	resp.Body.Close()
+	if ident, _ := s["identity"].(map[string]any); ident["subject"] != "onat@github" || ident["bound"] != false {
+		t.Fatalf("unbound session = %v", s)
+	}
+	resp = e.web(e.tailnet.URL, http.MethodPost, "/web/login", map[string]string{}, ts)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unbound identity: status %d", resp.StatusCode)
+	}
+	e.authStore.BindOwnerIdentity(context.Background(), "one", "tailscale", "onat@github")
+	resp = e.web(e.tailnet.URL, http.MethodPost, "/web/login", map[string]string{}, ts)
+	resp.Body.Close()
+	if c := sessionCookieOf(t, resp); resp.StatusCode != http.StatusNoContent || !c.Secure {
+		t.Fatalf("bound identity: status %d, cookie %+v", resp.StatusCode, c)
+	}
+}
+
+func TestStagedImportsAndSavedDefaults(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	e.stage("next")
+	var staged struct {
+		Staged []images.Staged `json:"staged"`
+	}
+	e.do("one", http.MethodGet, "/v1/image-imports", nil, http.StatusOK, &staged)
+	if len(staged.Staged) != 1 || staged.Staged[0].Source != "next" {
+		t.Fatalf("staged = %+v", staged.Staged)
+	}
+	var d map[string]any
+	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
+	if d["saved"] != false || d["image"] != "main" {
+		t.Fatalf("defaults = %v", d)
+	}
+	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
+	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
+	if d["saved"] != true {
+		t.Fatalf("defaults after save = %v", d)
+	}
+}

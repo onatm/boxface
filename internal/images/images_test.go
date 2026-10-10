@@ -112,3 +112,21 @@ func TestSetAliasMovesBetweenImages(t *testing.T) {
 		}
 	}
 }
+
+func TestStagedListsCompleteImports(t *testing.T) {
+	r, importDir, _ := newRegistry(t)
+	stage(t, importDir, "base", "kernel", "rootfs")
+	os.MkdirAll(filepath.Join(importDir, "partial"), 0o755)
+	os.WriteFile(filepath.Join(importDir, "partial", "vmlinux"), []byte("k"), 0o600)
+	os.WriteFile(filepath.Join(importDir, "loose-file"), []byte("x"), 0o600)
+	got, err := r.Staged()
+	if err != nil || !reflect.DeepEqual(got, []Staged{{Source: "base"}}) {
+		t.Fatalf("staged = %+v, %v", got, err)
+	}
+	if _, _, err := r.Import(context.Background(), "base"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Staged(); len(got) != 0 {
+		t.Fatalf("staged after import = %+v", got)
+	}
+}
