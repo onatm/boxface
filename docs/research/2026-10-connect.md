@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-10
 
-**Result:** Pass; `tailscale serve` to a Unix socket carries the API, its event streams, and the SSH upgrade tunnel, so `tsnet` is not needed
+**Result:** Pass (C0 spike and C5 client); `tailscale serve` to a Unix socket carries the API, its event streams, and the SSH upgrade tunnel, so `tsnet` is not needed
 
 **Plan:** [Install, Configure, Connect](../plans/2026-10-connect-and-web-ui.md#milestones), step C0
 
@@ -53,3 +53,23 @@ The plan asked for the host's public address to be firewalled off. It was left o
 - The client forces HTTP/1.1 through ALPN for the tunnel, since upgrades through `tailscale serve` work only on HTTP/1.1 ([tailscale#20882](https://github.com/tailscale/tailscale/issues/20882)). Other API calls may use HTTP/2.
 - `connect` (C5) should still set `ServerAliveInterval 15`. Idle sessions survived without it, but keepalives detect a dead network sooner after a switch.
 - Identity headers can be trusted on the Unix socket. They are replaced by `tailscale serve`, and only root can connect to the socket.
+
+## Client Connect (C5)
+
+**Date:** 2026-10-10. **Result:** Pass, after one fix.
+
+Same droplet and client. The current `boxface-api` and `boxface-worker` were installed with `-tailscale-socket /var/lib/boxface/api/tailscale.sock`, published with `tailscale serve --bg unix:...` on port 443. The Gate C image was rebuilt with `tmux` 3.6a in the profile; the profile and image build took about 3 minutes with a warm Nix store. Every command used the macOS build of `boxfacectl` against `https://<host>.<tailnet>.ts.net`.
+
+| Check | Result |
+|---|---|
+| `login URL --code` | Pass: logged in; device key generated and registered as the Mac's host name |
+| `image import tmux --alias main` | Pass: 38 s, mostly hashing the 6.7 GiB root filesystem |
+| `create work` with no flags | Pass: running in 7.0 s with the defaults (2 vCPUs, 2048 MiB, 20 GiB) |
+| `connect work` to a stopped environment | Pass: started it (`create_network`, `start_vm`, `wait_ready`), then attached to tmux session `main` with strict host-key checking against the pinned key |
+| Reconnect to a running environment | Pass: 3.2 s from command to tmux |
+| Client killed inside the session | Pass: `sleep 100000` kept running in session `main`; the next `connect` reattached to the same pane |
+| Ctrl-C while `connect` starts the environment | Pass: exit 130 with the resume command printed; the start finished on the server |
+| Network switch inside the session | Pass: after switching Wi-Fi to a phone hotspot, `connect` again found `top` still running |
+| Audit | Pass: each tunnel recorded as `environment.connect` with the environment ID and the client's tailnet address, taken from `X-Forwarded-For` on the socket |
+
+**Fix found by this run:** on macOS the config directory is `~/Library/Application Support/boxface`. ssh splits `UserKnownHostsFile` on whitespace, so the pinned key was never read and strict checking refused the first connection. `connect` now quotes the path, and the CLI test uses a config path containing a space.

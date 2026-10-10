@@ -100,7 +100,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{t: t, server: srv.URL, code: code, importDir: importDir, config: filepath.Join(dir, "config", "config.json"), worker: w, runner: runner}
+	return &harness{t: t, server: srv.URL, code: code, importDir: importDir, config: filepath.Join(dir, "Application Support", "config.json"), worker: w, runner: runner}
 }
 
 func (h *harness) run(ctx context.Context, stdin string, interactive bool, args ...string) (int, string, string) {
@@ -295,7 +295,7 @@ func TestConnectStartsStoppedEnvironmentAndPinsHostKey(t *testing.T) {
 	args := strings.Join(h.sshCalls[0], " ")
 	for _, want := range []string{
 		"-i " + filepath.Join(dir, "id_ed25519"),
-		"UserKnownHostsFile=" + filepath.Join(dir, "known_hosts"),
+		`UserKnownHostsFile="` + filepath.Join(dir, "known_hosts") + `"`,
 		"StrictHostKeyChecking=yes",
 		"HostKeyAlias=" + env.ID,
 		" tunnel " + env.ID,

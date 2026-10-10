@@ -620,7 +620,7 @@ func (c *cli) connect(ctx context.Context, args []string) error {
 	sshArgs := []string{
 		"-i", filepath.Join(dir, "id_ed25519"),
 		"-o", "IdentitiesOnly=yes",
-		"-o", "UserKnownHostsFile=" + knownHosts,
+		"-o", "UserKnownHostsFile=\"" + knownHosts + "\"",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "HostKeyAlias=" + env.ID,
 		"-o", "ProxyCommand=" + shellQuote(self) + " tunnel " + env.ID,
