@@ -60,13 +60,14 @@ func integrationConfig(t *testing.T) Config {
 		firecracker = "/usr/local/bin/firecracker"
 	}
 	return Config{
-		StateDir:     state,
-		ImagesDir:    images,
-		Firecracker:  firecracker,
-		VMUser:       "boxface-vm",
-		Pool:         netip.MustParsePrefix("172.20.0.0/16"),
-		ReadyTimeout: 2 * time.Minute,
-		StopTimeout:  30 * time.Second,
+		StateDir:       state,
+		ImagesDir:      images,
+		Firecracker:    firecracker,
+		VMUser:         "boxface-vm",
+		Pool:           netip.MustParsePrefix("172.20.0.0/16"),
+		ReadyTimeout:   2 * time.Minute,
+		StopTimeout:    30 * time.Second,
+		CredentialWait: 2 * time.Second,
 	}
 }
 
@@ -183,6 +184,25 @@ func TestIntegrationLifecycle(t *testing.T) {
 	if out, err := exec.Command("ssh", "-i", filepath.Join(cfg.StateDir, "key"), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile="+knownHosts, "-o", "ConnectTimeout=10", "dev@"+endpoint.String(), "true").CombinedOutput(); err != nil {
 		t.Fatalf("ssh with the pinned host key: %v: %s", err, out)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/true; echo rc=$?"); err != nil || !strings.Contains(out, "not loaded yet") || !strings.HasSuffix(out, "rc=1") {
+		t.Fatalf("launch before a push = %q, %v", out, err)
+	}
+	const itValue = "boxface-it-credential-value"
+	if err := h.SetCredentials(ctx, ids[0], lifecycle.Credentials{"codex": {"BOXFACE_IT_TOKEN": itValue}}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/printenv BOXFACE_IT_TOKEN"); err != nil || out != itValue {
+		t.Fatalf("bound variable in the child = %q, %v", out, err)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "/usr/local/bin/boxface-run --consumer pi -- /bin/sh -c 'echo unbound=${BOXFACE_IT_TOKEN:-none}'"); err != nil || out != "unbound=none" {
+		t.Fatalf("unbound consumer = %q, %v", out, err)
+	}
+	if out, err := guestSSH(cfg, a.Guest, "echo parent=${BOXFACE_IT_TOKEN:-none}; grep -rlsF "+itValue+" /run /tmp /home/dev /workspace /mnt/data 2>/dev/null | head -3; echo scanned"); err != nil || out != "parent=none\nscanned" {
+		t.Fatalf("value outside the child process: %q, %v", out, err)
+	}
+	if out, err := guestSSH(cfg, b.Guest, "/usr/local/bin/boxface-run --consumer codex -- /usr/bin/printenv BOXFACE_IT_TOKEN; echo rc=$?"); err != nil || strings.Contains(out, itValue) {
+		t.Fatalf("another environment received the value: %q, %v", out, err)
 	}
 	if _, err := guestSSH(cfg, a.Guest, "curl -fsS -m 15 -o /dev/null https://deb.debian.org"); err != nil {
 		t.Fatalf("guest cannot reach the internet: %v", err)

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/onatm/boxface/internal/lifecycle"
 )
@@ -23,7 +26,8 @@ func testHost(t *testing.T) *Host {
 		cfg:       Config{StateDir: state, ImagesDir: "/images", Pool: netip.MustParsePrefix("172.20.0.0/16")},
 		vmUID:     os.Getuid(),
 		vmGID:     os.Getgid(),
-		listeners: map[string]net.Listener{},
+		listeners: map[string][]net.Listener{},
+		broker:    newBroker(200 * time.Millisecond),
 	}
 	if err := os.MkdirAll(h.environmentsDir(), 0o755); err != nil {
 		t.Fatal(err)
@@ -179,6 +183,9 @@ func (r *recordingBackend) Inventory(context.Context) (Inventory, error) {
 func (r *recordingBackend) Endpoint(_ context.Context, id string) (netip.Addr, error) {
 	return netip.MustParseAddr("172.20.0.6"), r.record("Endpoint " + id)
 }
+func (r *recordingBackend) SetCredentials(_ context.Context, id string, creds lifecycle.Credentials) error {
+	return r.record(fmt.Sprintf("SetCredentials %s %d", id, len(creds)))
+}
 func (r *recordingBackend) HostKey(_ context.Context, id string) (string, error) {
 	return "ssh-ed25519 AAAA", r.record("HostKey " + id)
 }
@@ -237,6 +244,9 @@ func TestClientRoundTrip(t *testing.T) {
 	if got := strings.Join(b.calls[len(b.calls)-2:], ","); got != "Endpoint env-a,HostKey disk-a" {
 		t.Fatalf("calls = %s", got)
 	}
+	if err := c.SetCredentials(ctx, "env-a", lifecycle.Credentials{"claude-code": {"CLAUDE_CODE_OAUTH_TOKEN": "t"}}); err != nil || b.calls[len(b.calls)-1] != "SetCredentials env-a 1" {
+		t.Fatalf("set credentials = %v, calls %v", err, b.calls)
+	}
 	b.fail = errors.New("environment env-a VM is not running")
 	if _, err := c.Endpoint(ctx, "env-a"); err == nil || err.Error() != b.fail.Error() {
 		t.Fatalf("endpoint err = %v", err)
@@ -294,5 +304,80 @@ func TestKeysImage(t *testing.T) {
 		if _, err := keysImageContent(keys); err == nil {
 			t.Fatalf("%s: accepted %q", name, keys)
 		}
+	}
+}
+
+func askBroker(t *testing.T, socket, request string) brokerReply {
+	t.Helper()
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, request)
+	var reply brokerReply
+	if err := json.NewDecoder(conn).Decode(&reply); err != nil {
+		t.Fatal(err)
+	}
+	return reply
+}
+
+func TestBrokerServesOnlyTheSocketsEnvironment(t *testing.T) {
+	state, err := os.MkdirTemp("/tmp", "bfx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(state) })
+	h := testHost(t)
+	h.cfg.StateDir = state
+	ctx := context.Background()
+	for _, id := range []string{"env-a", "env-b"} {
+		os.MkdirAll(h.envDir(id), 0o755)
+		if err := h.listen(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(h.Close)
+	socket := func(id string) string { return filepath.Join(h.envDir(id), "vsock.sock_1025") }
+
+	if r := askBroker(t, socket("env-a"), `{"consumer":"claude-code"}`); !strings.Contains(r.Error, "not loaded") {
+		t.Fatalf("before push: %+v", r)
+	}
+	h.SetCredentials(ctx, "env-a", lifecycle.Credentials{"claude-code": {"CLAUDE_CODE_OAUTH_TOKEN": "token-a"}})
+	h.SetCredentials(ctx, "env-b", lifecycle.Credentials{"claude-code": {"CLAUDE_CODE_OAUTH_TOKEN": "token-b"}})
+	if r := askBroker(t, socket("env-a"), `{"consumer":"claude-code"}`); r.Env["CLAUDE_CODE_OAUTH_TOKEN"] != "token-a" || len(r.Env) != 1 {
+		t.Fatalf("env-a = %+v", r)
+	}
+	if r := askBroker(t, socket("env-b"), `{"consumer":"claude-code"}`); r.Env["CLAUDE_CODE_OAUTH_TOKEN"] != "token-b" {
+		t.Fatalf("env-b = %+v", r)
+	}
+	if r := askBroker(t, socket("env-a"), `{"consumer":"codex"}`); r.Error != "" || len(r.Env) != 0 {
+		t.Fatalf("unbound consumer = %+v", r)
+	}
+	if r := askBroker(t, socket("env-a"), `not json`); r.Error == "" {
+		t.Fatalf("malformed request = %+v", r)
+	}
+	h.stopListening("env-a")
+	if h.broker.loaded("env-a") || !h.broker.loaded("env-b") {
+		t.Fatal("stopping env-a did not clear only its credentials")
+	}
+}
+
+func TestBrokerWaitsForAPush(t *testing.T) {
+	b := newBroker(2 * time.Second)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		b.set("env-a", lifecycle.Credentials{"pi": {"OPENAI_API_KEY": "k"}})
+	}()
+	started := time.Now()
+	creds, ok := b.await("env-a")
+	if !ok || creds["pi"]["OPENAI_API_KEY"] != "k" || time.Since(started) > time.Second {
+		t.Fatalf("await = %v, %v after %s", creds, ok, time.Since(started))
+	}
+	original := lifecycle.Credentials{"pi": {"A": "1"}}
+	b.set("env-b", original)
+	original["pi"]["A"] = "changed"
+	if got, _ := b.await("env-b"); got["pi"]["A"] != "1" {
+		t.Fatal("the broker kept a reference to the caller's map")
 	}
 }

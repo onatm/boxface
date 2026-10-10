@@ -1,6 +1,6 @@
 # Agent Credential Store
 
-**Status:** Proposed — decisions below await the owner
+**Status:** Planned — decisions confirmed by the owner on 2026-10-10
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "built-in secret store"
 
@@ -49,15 +49,15 @@ Decided: Go CDK `secrets` with a local key now, keeper URL for KMS or OpenBao Tr
 
 ## Decisions
 
-Proposed; each needs the owner's confirmation.
+Confirmed by the owner on 2026-10-10, with the `shell` consumer deferred and the first acceptance target narrowed to the Claude Code setup token.
 
 | Decision | Proposal | Reason |
 |---|---|---|
 | Encryption | `gocloud.dev/secrets` envelope encryption in `boxface-api`. `-secrets-keeper` defaults to a local key in `/var/lib/boxface/api/secrets.key` (32 random bytes, mode 0600, owned by `boxface`, created on first start); a `awskms://`, `gcpkms://`, `azurekeyvault://`, or `hashivault://` URL selects a KMS instead, with only that driver compiled in when added | Open source, no extra service on one host, and a hosted version swaps the keeper without changing records |
 | Records | `secrets (id, owner_id, name, ciphertext, keeper, created_at, updated_at)` and `secret_bindings (secret_id, consumer, variable)`. A secret can bind to several consumers, each under its own variable | Matches the design's binding model: provider reference, consumer, delivery as an environment variable |
-| Consumers | `claude-code`, `codex`, `opencode`, `pi`, and `shell` (anything run with `boxface-run --consumer shell -- CMD`) | The four agents get transparent wrappers; other commands opt in explicitly |
+| Consumers | `claude-code`, `codex`, `opencode`, `pi`. A `shell` consumer for other commands is deferred | The four agents get transparent wrappers; nothing needs secrets in every shell yet |
 | Write-only values | The API and web UI accept values and never return them; listings show name, consumers, variables, and update time | The design's "never displays resolved credential values" |
-| Push | The API pushes an environment's resolved set to the worker after `start_vm`, whenever a secret or binding changes for running environments, and on every reconcile pass for environments the worker reports without one (after a worker restart, within 30 seconds). Values are never recorded in operation parameters, logs, or audit records | Worker restarts lose memory by design; reconcile restores it |
+| Push | The API pushes an environment's resolved set to the worker after `start_vm`, whenever a secret or binding changes for running environments, and on every reconcile pass for environments the worker reports without one. After a worker restart, a guest request waits up to 35 seconds for that push instead of failing. Values are never recorded in operation parameters, logs, or audit records | Worker restarts lose memory by design; the worker never calls the API, so reconcile restores it and the wait hides the gap |
 | Broker protocol | One JSON request per vsock connection on port 1025: `{"consumer": "claude-code"}`; reply `{"env": {"VAR": "value"}}` or `{"error": "…"}`. The worker serves only the set pushed for the environment whose socket received the connection | Identity is the socket, not anything the guest says |
 | Guest launcher | `boxface-run` in the image (Go, static, a few hundred lines) and wrappers `claude`, `codex`, `opencode`, `pi` in `/opt/boxface/bin`, placed first on PATH, that run `boxface-run --consumer <agent> -- <real binary> "$@"` | Agents just work in any shell or tmux window; values exist only in the agent process environment |
 | Failure | With no binding for a consumer, the wrapper runs the agent unchanged, so per-environment sign-ins keep working. With a binding that cannot be fetched (broker unreachable or the set not yet pushed), the launch fails with a message naming the consumer; it never falls back to another credential | The design's failure rule, without breaking agents that have no stored credential |
@@ -76,11 +76,11 @@ Proposed; each needs the owner's confirmation.
 
 | Step | Work | Verify |
 |---|---|---|
-| S1. Store | Migration; `internal/secrets` with the keeper, create/replace/delete/list, and `Resolve(owner)` returning consumer → variable → value; key file creation; routes `GET`/`POST /v1/secrets`, `PUT`/`DELETE /v1/secrets/{id}` | Tests: ciphertext differs from the value and decrypts only with the key; listings never include values; another owner cannot read, replace, or delete; a wrong key fails clearly; audit has no values |
-| S2. Broker | Worker RPC `PUT /v1/environments/{id}/secrets` (memory only), inventory flag for a loaded set, vsock listener on port 1025 per environment, request handling and limits | Tests: a request on one environment's socket never returns another's values; unknown consumer returns an error; unloaded set returns an error; the RPC body is never logged |
-| S3. Push | API pushes after `start_vm`, on secret changes for running environments, and on reconcile when the worker lacks a set; never stores values in operations | Tests: start pushes; a change reaches a running environment; after a simulated worker restart the next reconcile pushes again; operations and logs contain no value |
-| S4. Guest | `boxface-run` (cross-compiled into the image), wrappers, PATH change, onboarding fix; rebuild the image | Integration test on the droplet: a bound variable reaches the child process and not the parent shell, `/run`, `/tmp`, or the data disk; an unbound consumer runs unchanged; a bound but unpushed set fails the launch |
-| S5. Web UI | Credentials page with presets | Values never rendered back; cross-origin rules as for the other pages |
+| S1. Store *(done)* | Migration; `internal/secrets` with the keeper, create/replace/delete/list, and `Resolve(owner)` returning consumer → variable → value; key file creation; routes `GET`/`POST /v1/secrets`, `PUT`/`DELETE /v1/secrets/{id}` | Tests: ciphertext differs from the value and decrypts only with the key; listings never include values; another owner cannot read, replace, or delete; a wrong key fails clearly; audit has no values |
+| S2. Broker *(done)* | Worker RPC `PUT /v1/environments/{id}/secrets` (memory only), inventory flag for a loaded set, vsock listener on port 1025 per environment, request handling and limits | Tests: a request on one environment's socket never returns another's values; unknown consumer returns an error; unloaded set returns an error; the RPC body is never logged |
+| S3. Push *(done)* | API pushes after `start_vm`, on secret changes for running environments, and on reconcile when the worker lacks a set; never stores values in operations | Tests: start pushes; a change reaches a running environment; after a simulated worker restart the next reconcile pushes again; operations and logs contain no value |
+| S4. Guest *(done)* | `boxface-run` (cross-compiled into the image), wrappers, PATH change, onboarding fix; rebuild the image | Integration test on the droplet: a bound variable reaches the child process and not the parent shell, `/run`, `/tmp`, or the data disk; an unbound consumer runs unchanged; a bound but unpushed set fails the launch |
+| S5. Web UI *(done)* | Credentials page with presets | Values never rendered back; cross-origin rules as for the other pages |
 | S6. Acceptance | Scenarios below on the droplet | Results recorded in `docs/research/` |
 
 ## Acceptance Scenarios

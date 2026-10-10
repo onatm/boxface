@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +21,11 @@ type Backend interface {
 	Inventory(ctx context.Context) (Inventory, error)
 	Endpoint(ctx context.Context, environmentID string) (netip.Addr, error)
 	HostKey(ctx context.Context, diskID string) (string, error)
+	SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error
+}
+
+type credentialsRequest struct {
+	Credentials lifecycle.Credentials `json:"credentials"`
 }
 
 type endpointResponse struct {
@@ -76,6 +82,13 @@ func NewHandler(b Backend) http.Handler {
 		return b.StartVM(r.Context(), spec)
 	})
 	handle("POST /v1/vms/stop", byID(b.StopVM))
+	handle("PUT /v1/environments/{id}/credentials", func(r *http.Request) error {
+		var req credentialsRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+			return errors.New("decode credentials request")
+		}
+		return b.SetCredentials(r.Context(), r.PathValue("id"), req.Credentials)
+	})
 	handle("POST /v1/vms/wait-ready", byID(b.WaitReady))
 	get := func(pattern string, call func(r *http.Request) (any, error)) {
 		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +232,10 @@ func (c *Client) HostKey(ctx context.Context, diskID string) (string, error) {
 	var resp hostKeyResponse
 	err := c.do(ctx, http.MethodGet, "/v1/disks/"+url.PathEscape(diskID)+"/host-key", nil, &resp)
 	return resp.HostKey, err
+}
+
+func (c *Client) SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error {
+	return c.do(ctx, http.MethodPut, "/v1/environments/"+url.PathEscape(environmentID)+"/credentials", credentialsRequest{creds}, nil)
 }
 
 func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {

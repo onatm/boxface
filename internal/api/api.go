@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
 )
@@ -23,10 +24,14 @@ import (
 const maxBody = 1 << 20
 
 type Server struct {
-	Auth          *auth.Store
-	Lifecycle     *lifecycle.Service
-	Images        *images.Registry
-	SSHKeys       *sshkeys.Store
+	Auth        *auth.Store
+	Lifecycle   *lifecycle.Service
+	Images      *images.Registry
+	SSHKeys     *sshkeys.Store
+	Secrets     *secrets.Store
+	Credentials interface {
+		PushOwner(ctx context.Context, ownerID string)
+	}
 	Gateway       Gateway
 	DialGuest     func(ctx context.Context, address string) (net.Conn, error)
 	Capacity      lifecycle.Capacity
@@ -81,6 +86,10 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/ssh-keys", s.listSSHKeys)
 	authed("POST /v1/ssh-keys", s.addSSHKey)
 	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
+	authed("GET /v1/secrets", s.listSecrets)
+	authed("POST /v1/secrets", s.createSecret)
+	authed("PUT /v1/secrets/{id}", s.updateSecret)
+	authed("DELETE /v1/secrets/{id}", s.deleteSecret)
 	authed("POST /v1/environments", s.createEnvironment)
 	authed("GET /v1/environments", s.listEnvironments)
 	authed("GET /v1/environments/{id}", s.getEnvironment)
@@ -349,6 +358,71 @@ func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Secrets.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": list, "consumers": secrets.Consumers})
+}
+
+func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string            `json:"name"`
+		Value    string            `json:"value"`
+		Bindings []secrets.Binding `json:"bindings"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	sec, err := s.Secrets.Create(r.Context(), owner(r), req.Name, req.Value, req.Bindings)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.create", sec.Name)
+	writeJSON(w, http.StatusCreated, sec)
+}
+
+func (s *Server) updateSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Value    *string            `json:"value"`
+		Bindings *[]secrets.Binding `json:"bindings"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	sec, err := s.Secrets.Update(r.Context(), owner(r), r.PathValue("id"), req.Value, req.Bindings)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.update", sec.Name)
+	writeJSON(w, http.StatusOK, sec)
+}
+
+func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
+	name, err := s.Secrets.Delete(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.delete", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) auditSecret(r *http.Request, action, name string) {
+	if s.Credentials != nil {
+		s.Credentials.PushOwner(context.WithoutCancel(r.Context()), owner(r))
+	}
+	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), "secret:"+name, clientAddr(r)); err != nil {
+		slog.Error("record secret audit event", "action", action, "error", err)
+	}
+}
+
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	var req lifecycle.CreateRequest
 	if err := decode(w, r, &req); err != nil {
@@ -497,6 +571,9 @@ func writeError(w http.ResponseWriter, err error) {
 		{lifecycle.ErrNotFound, http.StatusNotFound, "not_found"},
 		{images.ErrNotFound, http.StatusNotFound, "not_found"},
 		{sshkeys.ErrNotFound, http.StatusNotFound, "not_found"},
+		{secrets.ErrInvalid, http.StatusBadRequest, "invalid_request"},
+		{secrets.ErrNotFound, http.StatusNotFound, "not_found"},
+		{secrets.ErrConflict, http.StatusConflict, "conflict"},
 		{lifecycle.ErrNameTaken, http.StatusConflict, "name_taken"},
 		{lifecycle.ErrEnvironmentDeleted, http.StatusConflict, "environment_deleted"},
 		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},

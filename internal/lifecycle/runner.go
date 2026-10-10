@@ -60,6 +60,7 @@ type Runner struct {
 	db         *sql.DB
 	worker     Worker
 	RetryDelay time.Duration
+	Started    func(ctx context.Context, environmentID string)
 
 	mu     sync.Mutex
 	active map[string]bool
@@ -182,6 +183,9 @@ func (r *Runner) execute(id string) error {
 		}
 		if _, err := r.db.ExecContext(ctx, `INSERT INTO operation_steps (operation_id, step, completed_at) VALUES (?, ?, ?)`, id, s.name, timestamp()); err != nil {
 			return err
+		}
+		if s.name == startVM.name && r.Started != nil {
+			r.Started(ctx, j.env.EnvironmentID)
 		}
 	}
 	return r.succeed(ctx, j, k)

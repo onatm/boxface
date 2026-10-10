@@ -1,6 +1,6 @@
 # Credential Broker
 
-**Status:** Draft — storage decided (built-in, open-source encryption library, providers later); delivery proposed
+**Status:** Storage and per-process delivery to agents implemented ([plan](../plans/2026-10-secret-store.md)); providers, file delivery, and other consumers proposed
 
 ---
 
@@ -40,6 +40,8 @@ Decided by the owner on 2026-10-10: built in, using an open-source secret store 
 | SOPS, age | MPL-2.0, BSD | File encryption, not a store |
 
 ### Delivery
+
+*Implemented:* `boxface-api` resolves an owner's bindings and pushes them to the worker after each start, after every change, and on reconcile; the worker holds them in memory and answers the guest launcher on the VM's own vsock socket; the launcher adds only the requesting agent's variables to that agent's environment. Nothing is written to disk on the host or in the guest, and changes reach the next launch without a restart.
 
 - Environment delivery is per process where possible.
 - Temporary file delivery uses a runtime directory with restrictive ownership and cleanup.

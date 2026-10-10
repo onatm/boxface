@@ -185,6 +185,16 @@ The image needs `tmux` in its profile; `experiments/gate-c/profile/flake.nix` in
 
 Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp` and `/run` are in memory. The root filesystem is read-only, there is no sudo, and Docker runs rootless as `dev`.
 
+### Agent credentials
+
+Instead of signing in to an agent in every environment, save a credential once on the web UI's Credentials page. Each environment's `claude`, `codex`, `opencode`, and `pi` commands are wrappers that fetch only their own credentials when they start, so you run them as usual:
+
+- **Claude Code:** run `claude setup-token` on any machine with a browser and save the token under "Claude Code subscription token".
+- **API keys:** OpenAI, Anthropic, and OpenRouter keys have presets; "Custom" binds any variable to chosen agents.
+- **ChatGPT subscriptions** (Codex, OpenCode, Pi) cannot be shared: their tokens rotate on use. Sign in inside each environment as above.
+
+Changes apply at the next agent launch, with no restart. Values are encrypted on the server, never shown again, and never written to disk in the environment. To run an agent without stored credentials, call it directly, for example `/opt/boxface/profile/bin/claude`. Environments need an image built after this feature; older images run agents without stored credentials.
+
 ### Behaviour to know
 
 - **Stopping and starting:** stopping shuts the guest down cleanly and keeps its disk. Starting boots the same disk again.
@@ -201,6 +211,7 @@ Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp`
 | Service logs | `journalctl -u boxface-api -u boxface-worker` |
 | A VM's console | `journalctl -u boxface-vm-<environment-id>` |
 | Database | `/var/lib/boxface/api/boxface.db` (SQLite, owned by `boxface`) |
+| Credential key | `/var/lib/boxface/api/secrets.key` (created on first start, mode 0600). Back it up separately from the database: without it, stored credentials cannot be decrypted and must be entered again. `-secrets-keeper` can point at another key file or a Go CDK keeper URL |
 | Images | `/var/lib/boxface/images/<image-id>/` |
 | Data disks | `/var/lib/boxface/disks/<disk-id>.ext4` |
 | Runtime state | `/var/lib/boxface/environments/<environment-id>/` |

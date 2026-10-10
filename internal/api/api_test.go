@@ -14,12 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 )
@@ -48,8 +50,20 @@ func (fakeGateway) HostKey(_ context.Context, diskID string) (string, error) {
 	return "ssh-ed25519 AAAAhost", nil
 }
 
+type pushRecorder struct {
+	mu     sync.Mutex
+	owners []string
+}
+
+func (p *pushRecorder) PushOwner(_ context.Context, ownerID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.owners = append(p.owners, ownerID)
+}
+
 type env struct {
 	t         *testing.T
+	pushes    *pushRecorder
 	db        *sql.DB
 	dialed    chan string
 	srv       *httptest.Server
@@ -69,7 +83,12 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	keeper, err := secrets.OpenKeeper(ctx, "file://"+filepath.Join(dir, "secrets.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := lifecycle.NewRunner(ctx, db, noopWorker{})
+	pushes := &pushRecorder{}
 	importDir, imagesDir := filepath.Join(dir, "import"), filepath.Join(dir, "images")
 	os.MkdirAll(importDir, 0o755)
 	os.MkdirAll(imagesDir, 0o755)
@@ -79,6 +98,8 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, importDir, imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
+		Secrets:      secrets.NewStore(db, keeper),
+		Credentials:  pushes,
 		Gateway:      fakeGateway{},
 		Capacity:     capacity,
 		PollInterval: 10 * time.Millisecond,
@@ -97,7 +118,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 	tailnet.Start()
 	t.Cleanup(func() { srv.Close(); tailnet.Close(); cancel(); runner.Wait(); db.Close() })
 
-	e := &env{t: t, db: db, dialed: dialed, srv: srv, tailnet: tailnet, authStore: authStore, runner: runner, tokens: map[string]string{}}
+	e := &env{t: t, pushes: pushes, db: db, dialed: dialed, srv: srv, tailnet: tailnet, authStore: authStore, runner: runner, tokens: map[string]string{}}
 	e.stage = func(name string) {
 		os.MkdirAll(filepath.Join(importDir, name), 0o755)
 		os.WriteFile(filepath.Join(importDir, name, "vmlinux"), []byte("kernel "+name), 0o644)
@@ -785,5 +806,63 @@ func TestStagedImportsAndSavedDefaults(t *testing.T) {
 	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
 	if d["saved"] != true {
 		t.Fatalf("defaults after save = %v", d)
+	}
+}
+
+func TestSecretRoutesNeverReturnValues(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	const value = "sk-ant-oat01-never-returned"
+	body := map[string]any{"name": "claude", "value": value, "bindings": []map[string]string{{"consumer": "claude-code", "variable": "CLAUDE_CODE_OAUTH_TOKEN"}}}
+	resp := e.request("one", http.MethodPost, "/v1/secrets", body, nil)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || strings.Contains(string(raw), value) {
+		t.Fatalf("create: status %d, %s", resp.StatusCode, raw)
+	}
+	var sec secrets.Secret
+	json.Unmarshal(raw, &sec)
+
+	resp = e.request("one", http.MethodGet, "/v1/secrets", nil, nil)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), "CLAUDE_CODE_OAUTH_TOKEN") || !strings.Contains(string(raw), `"consumers"`) || strings.Contains(string(raw), value) {
+		t.Fatalf("list = %s", raw)
+	}
+
+	if code := e.errorCode("one", http.MethodPost, "/v1/secrets", body, http.StatusConflict); code != "conflict" {
+		t.Fatalf("duplicate: code = %s", code)
+	}
+	e.errorCode("one", http.MethodPost, "/v1/secrets", map[string]any{"name": "x", "value": "v", "bindings": []map[string]string{{"consumer": "pi", "variable": "PATH"}}}, http.StatusBadRequest)
+	e.errorCode("two", http.MethodPut, "/v1/secrets/"+sec.ID, map[string]string{"value": "stolen"}, http.StatusNotFound)
+	e.errorCode("two", http.MethodDelete, "/v1/secrets/"+sec.ID, nil, http.StatusNotFound)
+	var list struct {
+		Secrets []secrets.Secret `json:"secrets"`
+	}
+	e.do("two", http.MethodGet, "/v1/secrets", nil, http.StatusOK, &list)
+	if len(list.Secrets) != 0 {
+		t.Fatalf("owner two sees %+v", list.Secrets)
+	}
+
+	e.do("one", http.MethodPut, "/v1/secrets/"+sec.ID, map[string]string{"value": value + "-2"}, http.StatusOK, nil)
+	e.do("one", http.MethodDelete, "/v1/secrets/"+sec.ID, nil, http.StatusNoContent, nil)
+
+	if len(e.pushes.owners) != 3 || e.pushes.owners[0] == "" || e.pushes.owners[0] != e.pushes.owners[2] {
+		t.Fatalf("pushes after create, update, delete = %v", e.pushes.owners)
+	}
+	rows, _ := e.db.Query(`SELECT action, target_id FROM auth_events WHERE action LIKE 'secret.%' ORDER BY id`)
+	var got []string
+	for rows.Next() {
+		var action, target string
+		rows.Scan(&action, &target)
+		got = append(got, action+" "+target)
+	}
+	rows.Close()
+	if strings.Join(got, ",") != "secret.create secret:claude,secret.update secret:claude,secret.delete secret:claude" {
+		t.Fatalf("audit = %v", got)
+	}
+	var leaked int
+	e.db.QueryRow(`SELECT count(*) FROM auth_events WHERE target_id LIKE '%' || ? || '%' OR action LIKE '%' || ? || '%'`, value, value).Scan(&leaked)
+	if leaked != 0 {
+		t.Fatal("the value appears in the audit log")
 	}
 }

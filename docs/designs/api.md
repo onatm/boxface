@@ -42,6 +42,7 @@ Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1
 | `GET /v1/image-imports` | Directories in the import directory holding both artifacts, ready to register. *Implemented* |
 | `PUT /v1/image-aliases/{name}` | Point an alias such as `main` at an image, `{"image_id": "..."}`; existing environments keep their image. *Implemented* |
 | `GET /v1/defaults`, `PUT /v1/defaults` | The owner's create defaults: `image` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`. Without saved defaults: `main`, 2, 2048, 20. `GET` adds `saved`. *Implemented* |
+| `GET /v1/secrets`, `POST /v1/secrets`, `PUT /v1/secrets/{id}`, `DELETE /v1/secrets/{id}` | Agent credentials: `{"name", "value", "bindings": [{"consumer", "variable"}]}`. Values are write-only: responses carry names, bindings, and times only. Consumers are `claude-code`, `codex`, `opencode`, and `pi`; variables are upper-case names other than reserved ones such as `PATH`, `HOME`, and `LD_*`; a consumer and variable can be bound by one secret only. Every change is pushed to the owner's running environments. *Implemented* |
 | `GET /v1/ssh-keys`, `POST /v1/ssh-keys`, `DELETE /v1/ssh-keys/{id}` | The owner's SSH public keys, `{"name", "public_key"}`; one key line without options; `201` when new, `200` with the existing key when the fingerprint matches. *Implemented* |
 | `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name` and optional `image_id` (ID or alias), `vcpus`, `memory_mib`, `disk_gib`; omitted fields come from the owner's defaults, are resolved once, and the environment records the concrete values. The owner's SSH keys at submission are recorded with the operation and given to the VM; a create with no registered key is rejected |
 | `GET /v1/environments` | List authorised environments, including deleted ones whose disk is retained. *Implemented* |
@@ -93,8 +94,10 @@ Use SQLite transactions for local metadata.
 | --- | --- |
 | Owner | ID, authentication records, permitted bindings, create defaults |
 | API token | ID, owner, SHA-256 hash, client name, creation, last use, revocation |
-| Auth event | Owner, action (`login`, `token.revoke`, `identity.bind`, `identity.unbind`, `environment.connect`), token ID, target (the environment for connects, the identity for identity logins and bindings), client address, time |
+| Auth event | Owner, action (`login`, `token.revoke`, `identity.bind`, `identity.unbind`, `environment.connect`, `secret.create`, `secret.update`, `secret.delete`, `secret.deliver`), token ID, target (the environment for connects, the identity for identity logins and bindings), client address, time |
 | Web session | ID, owner, SHA-256 hash, creation, expiry, end |
+| Secret | ID, owner, name (unique per owner), ciphertext from the Go CDK keeper, creation, update; never the value |
+| Secret binding | Secret, owner, consumer, variable; unique per owner, consumer, and variable |
 | Identity | ID, owner, provider (`tailscale`), subject (the provider's user, such as `alice@github`), creation; each provider and subject is bound to at most one owner |
 | SSH key | ID, owner, name, public key without comment or options, SHA-256 fingerprint unique per owner |
 | Image alias | Name, image ID; repointing never changes existing environments |

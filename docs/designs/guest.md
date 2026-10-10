@@ -46,6 +46,7 @@ Enforcement includes a read-only root device, a read-only package store/profile,
 
 - One Boxface owner maps to a fixed guest user, initially `dev` with a stable UID/GID. Each environment has its own disk, so the same guest UID across environments is not a shared filesystem identity. Multi-user guests are out of scope.
 - Persist guest SSH host identity outside the reusable image. Generate it per environment on first initialisation.
+- `/usr/local/bin/boxface-run --consumer NAME -- COMMAND` asks the credential broker over vsock (host CID 2, port 1025) for that consumer's variables and execs the command with them added to its environment; it fails with a message naming the consumer if the broker cannot answer. `/opt/boxface/bin`, first on PATH, holds `claude`, `codex`, `opencode`, and `pi` wrappers that run the profile's binary through it, so agents receive stored credentials in any shell or tmux window and nothing else does. For a Claude Code token it also sets `hasCompletedOnboarding` in `~/.claude.json`.
 - `boxface-keys.service` copies the owner's SSH keys from the read-only keys drive (`/dev/vdc`) to `/run/boxface/authorized_keys` before `ssh` starts; `sshd` reads that file and then `~/.ssh/authorized_keys`, so keys the user adds inside the environment still work. Images without this unit accept only the keys a disk was created with, as before.
 - Never bake shared host keys, machine IDs, or credentials into a base image. Seed first-boot metadata through a controlled worker-to-guest channel.
 

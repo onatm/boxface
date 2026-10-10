@@ -337,6 +337,92 @@ views.keys = async () => {
     h("h2", {}, "Add a key"), h("div", { class: "card" }, form));
 };
 
+const presets = [
+  { id: "claude", label: "Claude Code subscription token (claude setup-token)", name: "claude-token", bindings: [["claude-code", "CLAUDE_CODE_OAUTH_TOKEN"]] },
+  { id: "openai", label: "OpenAI API key", name: "openai-api-key", bindings: [["codex", "OPENAI_API_KEY"], ["opencode", "OPENAI_API_KEY"], ["pi", "OPENAI_API_KEY"]] },
+  { id: "anthropic", label: "Anthropic API key", name: "anthropic-api-key", bindings: [["claude-code", "ANTHROPIC_API_KEY"], ["opencode", "ANTHROPIC_API_KEY"], ["pi", "ANTHROPIC_API_KEY"]] },
+  { id: "openrouter", label: "OpenRouter API key", name: "openrouter-api-key", bindings: [["opencode", "OPENROUTER_API_KEY"], ["pi", "OPENROUTER_API_KEY"]] },
+  { id: "custom", label: "Custom", name: "", bindings: [] },
+];
+
+views.credentials = async () => {
+  const data = await api("GET", "/v1/secrets");
+  const preset = h("select", { id: "preset" }, presets.map((p) => h("option", { value: p.id }, p.label)));
+  const name = h("input", { id: "secret-name", required: true, maxlength: 63, spellcheck: "false" });
+  const value = h("input", { id: "secret-value", type: "password", required: true, autocomplete: "off", spellcheck: "false" });
+  const variable = h("input", { id: "secret-variable", spellcheck: "false", placeholder: "GITHUB_TOKEN" });
+  const checks = data.consumers.map((c) => h("input", { type: "checkbox", value: c, id: "consumer-" + c }));
+  const custom = h("div", { class: "stack", hidden: true },
+    h("label", { for: "secret-variable" }, "Environment variable", variable),
+    h("fieldset", { class: "consumers" }, h("legend", {}, "Agents that receive it"),
+      checks.map((c) => h("label", { class: "inline", for: c.id }, c, " ", c.value))));
+  const covered = h("p", { class: "hint" });
+  const sync = () => {
+    const p = presets.find((x) => x.id === preset.value);
+    custom.hidden = p.id !== "custom";
+    name.value = p.name;
+    covered.textContent = p.id === "custom" ? "" : "Given to " + p.bindings.map(([c, v]) => `${c} as ${v}`).join(", ") + ".";
+  };
+  preset.addEventListener("change", sync);
+  sync();
+  const save = h("button", { class: "primary", type: "submit" }, "Save credential");
+  const form = h("form", { class: "stack" },
+    h("label", { for: "preset" }, "Kind", preset), covered,
+    h("label", { for: "secret-name" }, "Name", name),
+    custom,
+    h("label", { for: "secret-value" }, "Value", value),
+    h("div", {}, save));
+  form.addEventListener("submit", busy(save, "Saving…", async () => {
+    const p = presets.find((x) => x.id === preset.value);
+    const bindings = p.id === "custom"
+      ? checks.filter((c) => c.checked).map((c) => ({ consumer: c.value, variable: variable.value.trim() }))
+      : p.bindings.map(([consumer, variable]) => ({ consumer, variable }));
+    if (bindings.length === 0) throw new Error("Choose at least one agent and a variable name.");
+    await api("POST", "/v1/secrets", { name: name.value.trim(), value: value.value, bindings });
+    value.value = "";
+    await views.credentials();
+    status(`Saved ${name.value}. Running environments get it at the next agent launch.`, "ok");
+  }));
+
+  const rows = data.secrets.map((sec) => {
+    const replace = h("button", { type: "button" }, "Replace value");
+    const remove = h("button", { type: "button", class: "danger" }, "Delete");
+    const editor = h("div", {});
+    replace.addEventListener("click", () => {
+      const input = h("input", { type: "password", autocomplete: "off", required: true, "aria-label": `New value for ${sec.name}` });
+      const ok = h("button", { class: "primary", type: "submit" }, "Save");
+      const f = h("form", { class: "command" }, input, ok);
+      f.addEventListener("submit", busy(ok, "Saving…", async () => {
+        await api("PUT", `/v1/secrets/${encodeURIComponent(sec.id)}`, { value: input.value });
+        await views.credentials();
+        status(`Replaced ${sec.name}. The next agent launch uses the new value.`, "ok");
+      }));
+      editor.replaceChildren(f);
+      input.focus();
+    });
+    remove.addEventListener("click", busy(remove, "Deleting…", async () => {
+      if (!confirm(`Delete ${sec.name}? Agents launched from now on will not receive it.`)) return;
+      await api("DELETE", `/v1/secrets/${encodeURIComponent(sec.id)}`);
+      await views.credentials();
+    }));
+    return h("tr", {},
+      h("td", {}, sec.name, editor),
+      h("td", {}, sec.bindings.map((b) => h("div", {}, h("span", { class: "badge" }, b.consumer), " ", h("code", {}, b.variable)))),
+      h("td", { class: "optional" }, when(sec.updated_at)),
+      h("td", { class: "actions" }, replace, " ", remove));
+  });
+
+  render(
+    h("h1", {}, "Credentials"),
+    h("p", { class: "lead" }, "Saved once and given to agents in every environment when they start. Values are encrypted on the server and never shown again."),
+    data.secrets.length === 0 ? h("p", { class: "muted" }, "No credentials saved.") : h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Given to"), h("th", { class: "optional" }, "Updated"), h("th", {}, ""))),
+      h("tbody", {}, rows))),
+    h("h2", {}, "Add a credential"),
+    h("div", { class: "card" }, form),
+    h("p", { class: "hint" }, "ChatGPT subscription sign-ins for Codex, OpenCode, and Pi cannot be shared between environments; sign in inside each environment instead. Run claude setup-token on any machine with a browser to create a Claude Code token."));
+};
+
 views.clients = async () => {
   const [tokens, identities] = await Promise.all([api("GET", "/v1/tokens"), api("GET", "/v1/identities")]);
   const issued = h("div", {});

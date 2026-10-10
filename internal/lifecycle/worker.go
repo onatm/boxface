@@ -2,6 +2,8 @@ package lifecycle
 
 import "context"
 
+type Credentials map[string]map[string]string
+
 type DiskSpec struct {
 	DiskID        string
 	EnvironmentID string

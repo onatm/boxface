@@ -28,7 +28,7 @@ Server status, recipe/profile revisions, environment creation, environment detai
 
 ### Implemented Pages
 
-`boxface-api` serves the UI at `/` from static HTML, CSS, and JavaScript embedded in the binary, with no build step. It calls the `/v1` API with `fetch`, like the CLI. Pages: Setup (a checklist: SSH key, `main` image, saved defaults, a CLI login), Images (register staged imports; move `main`), Defaults (with host limits), SSH keys, Clients (issue a CLI login code with the exact `boxfacectl login` command; revoke logins; bind or unbind a Tailscale login), and Environments (read-only, with state, whether `main` has moved since creation, and the `connect` command). Registering the first image also points `main` at it.
+`boxface-api` serves the UI at `/` from static HTML, CSS, and JavaScript embedded in the binary, with no build step. It calls the `/v1` API with `fetch`, like the CLI. Pages: Setup (a checklist: SSH key, `main` image, saved defaults, a CLI login), Images (register staged imports; move `main`), Defaults (with host limits), SSH keys, Credentials (save agent credentials from presets or a custom binding; replace or delete; values never shown), Clients (issue a CLI login code with the exact `boxfacectl login` command; revoke logins; bind or unbind a Tailscale login), and Environments (read-only, with state, whether `main` has moved since creation, and the `connect` command). Registering the first image also points `main` at it.
 
 ### Security & Privacy
 

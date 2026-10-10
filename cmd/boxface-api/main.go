@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 	"github.com/onatm/boxface/internal/version"
@@ -65,6 +66,7 @@ func serve(args []string) error {
 	fs.StringVar(&lc.acmeDir, "acme-dir", "/var/lib/boxface/api/acme", "directory caching Let's Encrypt account and certificates")
 	fs.StringVar(&lc.tailscaleSocket, "tailscale-socket", "", "Unix socket for tailscale serve, such as /var/lib/boxface/api/tailscale.sock")
 	dbPath := fs.String("db", "/var/lib/boxface/api/boxface.db", "SQLite database")
+	keeperURL := fs.String("secrets-keeper", "file:///var/lib/boxface/api/secrets.key", "key that encrypts stored credentials: a file:// key file, created if missing, or a Go CDK keeper URL")
 	workerSocket := fs.String("worker-socket", "/run/boxface/worker.sock", "host worker socket")
 	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
 	imagesDir := fs.String("images-dir", "/var/lib/boxface/images", "directory holding image artifact sets")
@@ -84,13 +86,28 @@ func serve(args []string) error {
 		return err
 	}
 	defer db.Close()
+	keeper, err := secrets.OpenKeeper(ctx, *keeperURL)
+	if err != nil {
+		return err
+	}
+	defer keeper.Close()
 	client := worker.NewClient(*workerSocket)
 	runner := lifecycle.NewRunner(ctx, db, client)
+	authStore := auth.New(db)
+	secretStore := secrets.NewStore(db, keeper)
+	pusher := secrets.NewPusher(db, secretStore, client, authStore)
+	runner.Started = func(ctx context.Context, environmentID string) {
+		if err := pusher.Push(ctx, environmentID); err != nil {
+			slog.Warn("credential push after start failed; reconcile will retry", "environment", environmentID, "error", err)
+		}
+	}
 	server := &api.Server{
-		Auth:         auth.New(db),
+		Auth:         authStore,
 		Lifecycle:    lifecycle.NewService(db, runner, capacity),
 		Images:       images.NewRegistry(db, *importDir, *imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
+		Secrets:      secretStore,
+		Credentials:  pusher,
 		Gateway:      client,
 		Capacity:     capacity,
 		PollInterval: 500 * time.Millisecond,
@@ -101,7 +118,7 @@ func serve(args []string) error {
 		return err
 	}
 
-	reconcile(ctx, runner, client)
+	reconcile(ctx, runner, client, pusher)
 	runner.Kick()
 	go func() {
 		for {
@@ -109,7 +126,7 @@ func serve(args []string) error {
 			case <-ctx.Done():
 				return
 			case <-time.After(*reconcileInterval):
-				reconcile(ctx, runner, client)
+				reconcile(ctx, runner, client, pusher)
 			}
 		}
 	}()
@@ -136,14 +153,27 @@ func serve(args []string) error {
 	return err
 }
 
-func reconcile(ctx context.Context, runner *lifecycle.Runner, inv lifecycle.Inventory) {
-	stopped, err := runner.Reconcile(ctx, inv)
+func reconcile(ctx context.Context, runner *lifecycle.Runner, client *worker.Client, pusher *secrets.Pusher) {
+	stopped, err := runner.Reconcile(ctx, client)
 	if err != nil {
 		slog.Warn("reconcile with worker failed; will retry", "error", err)
+		return
 	}
 	for _, id := range stopped {
 		slog.Info("environment marked stopped: VM not running", "environment", id)
 	}
+	inv, err := client.Inventory(ctx)
+	if err != nil {
+		slog.Warn("worker inventory for credentials failed; will retry", "error", err)
+		return
+	}
+	var missing []string
+	for _, e := range inv.Environments {
+		if e.VM && !e.Credentials {
+			missing = append(missing, e.EnvironmentID)
+		}
+	}
+	pusher.Reconcile(ctx, missing)
 }
 
 func ownerFlags(name string, args []string, extra ...func(fs *flag.FlagSet)) (string, string) {

@@ -731,3 +731,35 @@ func TestStartUsesTheOwnersCurrentKeys(t *testing.T) {
 		t.Fatalf("start with no keys: err = %v", err)
 	}
 }
+
+func TestStartedHookRunsAfterStartVM(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	var mu sync.Mutex
+	var started []string
+	r.Started = func(_ context.Context, id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		started = append(started, id+" after "+w.callLog()[len(w.callLog())-1])
+	}
+	acc, err := s.Create(context.Background(), owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Stop(context.Background(), owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Start(context.Background(), owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	want := acc.EnvironmentID + " after StartVM"
+	if len(started) != 2 || started[0] != want || started[1] != want {
+		t.Fatalf("started = %v", started)
+	}
+}

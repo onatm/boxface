@@ -261,41 +261,57 @@ func (h *Host) listen(environmentID string) error {
 		return nil
 	}
 	dir := h.envDir(environmentID)
-	path := filepath.Join(dir, "vsock.sock_"+strconv.Itoa(readyPort))
-	os.Remove(path)
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return fmt.Errorf("readiness listener: %w", err)
-	}
-	if err := os.Chown(path, h.vmUID, h.vmGID); err != nil {
-		l.Close()
-		return err
-	}
-	h.listeners[environmentID] = l
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			msg, _ := io.ReadAll(io.LimitReader(conn, 64))
-			conn.Close()
-			if strings.Contains(string(msg), "ready") {
-				os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644)
-			}
+	ready := func(conn net.Conn) {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		msg, _ := io.ReadAll(io.LimitReader(conn, 64))
+		conn.Close()
+		if strings.Contains(string(msg), "ready") {
+			os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644)
 		}
-	}()
+	}
+	credentials := func(conn net.Conn) { h.broker.serve(environmentID, conn) }
+	var ls []net.Listener
+	for _, p := range []struct {
+		port   int
+		handle func(net.Conn)
+	}{{readyPort, ready}, {brokerPort, credentials}} {
+		path := filepath.Join(dir, "vsock.sock_"+strconv.Itoa(p.port))
+		os.Remove(path)
+		l, err := net.Listen("unix", path)
+		if err == nil {
+			err = os.Chown(path, h.vmUID, h.vmGID)
+		}
+		if err != nil {
+			for _, open := range append(ls, l) {
+				if open != nil {
+					open.Close()
+				}
+			}
+			return fmt.Errorf("vsock listener on port %d: %w", p.port, err)
+		}
+		ls = append(ls, l)
+		go func() {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go p.handle(conn)
+			}
+		}()
+	}
+	h.listeners[environmentID] = ls
 	return nil
 }
 
 func (h *Host) stopListening(environmentID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if l, ok := h.listeners[environmentID]; ok {
+	for _, l := range h.listeners[environmentID] {
 		l.Close()
-		delete(h.listeners, environmentID)
 	}
+	delete(h.listeners, environmentID)
+	h.broker.clear(environmentID)
 }
 
 func (h *Host) recoverListeners(ctx context.Context) error {
