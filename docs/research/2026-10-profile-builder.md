@@ -111,3 +111,23 @@ The base image (955 MiB, no profile) was imported as `main`, and `boxfacectl cre
 | Environments page | `prof` shows `main #2` with a "#3 ready" badge |
 
 The `ui-check` profile remains on the droplet; profiles cannot be deleted yet.
+
+## Acceptance (P6)
+
+**Date:** 2026-10-11. **Result:** U1, U2, U4, U5, U6, U7 pass; U3 passes as written but exposed that module settings other than packages do not reach the guest.
+
+| ID | Scenario | Result |
+|---|---|---|
+| U1 | `main` with the four agents, mise, Node, Rust, gcc, ripgrep, jq, htop, and dotfiles `https://github.com/octocat/Hello-World` at `master`; `boxfacectl create work`; login shell | Pass. Revision 4 built in 117 s (warm cache); the builder VM resolved `master` to `7fd1a60b01f91b314f59955a4e4d4e80d8edf11d`. `work` was created on the base image with `main` revision 4; every tool ran; personalisation recorded that commit and applied `~/README`; tmux 3.6a. After an edit to `~/README` and a stop and start, the edit remained and the applied time was unchanged |
+| U2 | Add a package to `main`, create a new environment | Pass (P5): `htop` in revision 3; `prof` stayed on revision 2 and the web UI and `inspect` showed revision 3 ready |
+| U3 | Raw module adding `fd` and setting `programs.git.settings.user.name` | **Partial.** Built in 64 s; `fd` 10.4.2 ran in an environment from it; `git config user.name` was empty. Only `home.packages` content reaches the guest, because the builder exports Home Manager's `home-path`, not its generated files or activation |
+| U4 | A module with a syntax error; a picker naming a missing package | Pass: both `failed` with "nix build failed" and the Nix error (`syntax error`; `undefined variable 'definitely-not-a-package-xyz'`) in the log; the profile's previous ready revision stays usable |
+| U5 | A build step connecting to the host | Pass (P3): `curl: (28) Connection timed out` to host SSH |
+| U6 | Same spec saved twice | Pass (P3): ready within 3 s, no VM |
+| U7 | Warm rebuild after a small change | Pass: 117–131 s for the full agent profile, of which about 90 s is packing; 1.5 min for a small profile cold; 3.6 min for the full profile cold |
+
+Builds queued together ran one at a time (`u4` stayed `pending` until `u3` finished). Deleting a test environment and two test profiles let pruning remove their drives automatically.
+
+### Finding: module settings are not applied
+
+A Home Manager module can set much more than packages (`programs.git`, shell configuration, `home.file`, session variables), and users editing a module in the web UI will expect those settings to take effect. Today they are evaluated and built but silently dropped. Options, recorded in the plan's open questions: export Home Manager's generated `home-files` with the profile and link or copy them into the home on first boot, as chezmoi does for dotfiles; or run a constrained activation; or reject options other than packages until one of these exists.

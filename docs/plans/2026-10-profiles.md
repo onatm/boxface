@@ -1,6 +1,6 @@
 # User Profiles and Builds
 
-**Status:** Planned — all decisions confirmed by the owner on 2026-10-10
+**Status:** Done — P0–P6 on the droplet ([results](../research/2026-10-profile-builder.md)); module settings other than packages are not yet applied (open question)
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "recipe/profile revision management"
 
@@ -101,7 +101,7 @@ Confirmed by the owner on 2026-10-10.
 | P4. Environments *(done)* | Profile defaults and aliases, `create --profile`, profile drive in `VMSpec`, environment records | `create` uses the default profile; moving `main` leaves existing environments on their revision |
 | P5. Web UI *(done)* | Profiles page with picker, raw editor, build progress, and log tail | Builds start and report from the browser; cross-origin rules as elsewhere |
 | P5b. Disk cleanup *(done)* | Added after P4 filled the droplet's disk: image removal, profile deletion, automatic pruning of unused profile drives, build cache clearing, a storage report on the Images page, and free-space guards in the worker | Tests: in-use images and profiles are refused with the users named; pruning keeps latest, in-use, and recent drives and a pruned spec rebuilds; drive listing ignores temporary files; allocated space counts blocks, not sparse sizes. On the droplet: an unused 5.4 GiB image removed (free space 7.8 → 13.1 GiB), an in-use one refused naming its environment |
-| P6. Acceptance | Scenarios below on the droplet | Results in `docs/research/` |
+| P6. Acceptance *(done)* | Scenarios below on the droplet | Results in `docs/research/` |
 
 ## Acceptance Scenarios
 
@@ -118,5 +118,5 @@ Confirmed by the owner on 2026-10-10.
 ## Open Questions
 
 - How users without Nix knowledge find package names; a search proxied from `search.nixos.org` is a candidate after P5.
-- Whether `home.file` and session variables from raw modules should be applied (today only `home.packages` content reaches the guest; Gate B exported `home-path` only).
+- **Applying module settings (raised by U3).** Only `home.packages` content reaches the guest; `programs.*`, `home.file`, and session variables are built and dropped, and a user editing a module will expect them to work. Options: ship Home Manager's generated `home-files` on the profile drive and link or copy them into the home on first boot, alongside the chezmoi dotfiles; run a constrained activation; or reject other options until one exists.
 - Garbage collection of unused profile drives and cache disks, which grow by several GiB per revision. *Raised by P4:* the droplet's disk filled during P4 (profile drives, a 7 GiB per-owner cache, imported images, and experiment scratch), which stopped SQLite writes until space was freed; capacity checks count environment data disks only. Disk headroom and accounting for drives and caches are needed before other users build profiles.
