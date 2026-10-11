@@ -10,7 +10,7 @@
 
 **Planning horizon:** Until the personal daily-use trial validates the MVP; Later items are direction, not commitments.
 
-**Last reviewed:** 2026-10-09
+**Last reviewed:** 2026-10-11
 
 **Next review:** When the daily terminal workflow exits, or when ThinkCentre measurements contradict the nested-droplet results.
 
@@ -70,7 +70,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Success signal:** Tablet disconnects do not terminate running sessions; project work stays remote and recoverable; Claude Code, Codex, OpenCode, and Pi each complete a small real task with a supported authentication mode.
 - **Dependencies:** Durable server lifecycle (complete).
 - **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Devices that log in after an environment started need one restart before they can connect ([resolved open question](./plans/2026-10-connect-and-web-ui.md#open-questions)).
-- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). All four agents signed in with subscriptions inside an environment and completed a small task, and their logins survived a restart ([agent authentication](./research/2026-10-agent-auth.md)). Remaining before exit: the same workflow from the tablet itself, on a real repository. Agent logins are per environment; a built-in secret store (Go CDK `secrets`, decided) moves to Usable configuration and operations.
+- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). All four agents signed in with subscriptions inside an environment and completed a small task, and their logins survived a restart ([agent authentication](./research/2026-10-agent-auth.md)). Remaining before exit: the same workflow from the tablet itself, on a real repository. Agent logins are per environment, or shared across environments through the built-in credential store (done 2026-10-11).
 - **Confidence:** Medium.
 - **Owner:** onatm
 - **Advance / completion criteria:** The plan's acceptance scenarios pass on the droplet, and the success signal holds.
@@ -81,7 +81,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
-- **Candidate bets:** A built-in secret store for agent credentials so environments need no per-environment sign-in ([Agent Credential Store](./plans/2026-10-secret-store.md) plan, proposed), the rest of the [Web UI](./designs/web-ui.md), user profiles built in an isolated builder VM and delivered as their own drive ([User Profiles and Builds](./plans/2026-10-profiles.md), done 2026-10-11; module settings beyond packages still open), explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
+- **Candidate bets:** A built-in secret store for credentials so environments need no per-environment sign-in ([Agent Credential Store](./plans/2026-10-secret-store.md), done), the rest of the [Web UI](./designs/web-ui.md), user profiles built in an isolated builder VM and delivered as their own drive ([User Profiles and Builds](./plans/2026-10-profiles.md), done 2026-10-11, including Home Manager generated files and session variables), explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
 - **Confidence:** Medium.
