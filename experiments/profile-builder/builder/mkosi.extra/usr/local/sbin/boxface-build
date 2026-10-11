@@ -1,0 +1,42 @@
+#!/bin/sh
+set -eu
+
+result() { echo "BOXFACE-RESULT $*" > /dev/console 2>&1 || true; }
+trap 'rc=$?; set +e; [ "$rc" -eq 0 ] || result "status=failed exit=$rc"' EXIT
+started=$(date +%s)
+
+mkdir -p /nix /input
+blkid /dev/vdb > /dev/null 2>&1 || mkfs.ext4 -q -L boxface-nix /dev/vdb
+mount -o noatime /dev/vdb /nix
+mount -o ro /dev/vdc /input
+mkdir -p /nix/.tmp /nix/.home
+export HOME=/nix/.home TMPDIR=/nix/.tmp XDG_CACHE_HOME=/nix/.home/.cache
+cache_before=$(du -sm /nix/store 2> /dev/null | cut -f1 || echo 0)
+
+for _ in $(seq 1 30); do
+  curl -fsS -o /dev/null https://cache.nixos.org/nix-cache-info && break
+  sleep 1
+done
+
+build_started=$(date +%s)
+if ! nix build "path:/input/profile#homeConfigurations.dev.activationPackage" -o /nix/.home/generation > /nix/.tmp/build.log 2>&1; then
+  tail -n 40 /nix/.tmp/build.log
+  exit 1
+fi
+built=$(date +%s)
+
+home=$(readlink -f /nix/.home/generation/home-path)
+out=/nix/.boxface-out
+rm -rf "$out"
+mkdir -p "$out/store" "$out/boxface"
+nix-store -qR "$home" > /nix/.tmp/closure.txt
+while read -r path; do cp -al "$path" "$out/store/"; done < /nix/.tmp/closure.txt
+ln -s "$home" "$out/profile"
+cp -a /input/dotfiles "$out/boxface/dotfiles"
+cp /input/dotfiles-revision "$out/boxface/dotfiles-revision"
+closure_mib=$(du -sm "$out/store" | cut -f1)
+mkfs.ext4 -q -L boxface-profile -d "$out" /dev/vdd
+rm -rf "$out"
+packed=$(date +%s)
+
+result "status=ok home_path=$home closure_paths=$(wc -l < /nix/.tmp/closure.txt) closure_mib=$closure_mib cache_before_mib=$cache_before cache_after_mib=$(du -sm /nix/store | cut -f1) nix_build_s=$((built - build_started)) pack_s=$((packed - built)) total_s=$((packed - started))"

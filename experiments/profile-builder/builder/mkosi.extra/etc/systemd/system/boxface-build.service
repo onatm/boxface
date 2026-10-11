@@ -1,0 +1,14 @@
+[Unit]
+Description=Build the profile on the inputs drive into the output drive
+After=systemd-networkd.service
+SuccessAction=reboot
+FailureAction=reboot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/boxface-build
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

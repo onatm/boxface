@@ -1,0 +1,6 @@
+/dev/vda  /                 ext4   ro,noatime              0 0
+/dev/vdb  /mnt/data         ext4   noatime                 0 2
+/dev/vdd  /nix              ext4   ro,noatime,nofail       0 0
+tmpfs     /var/log          tmpfs  mode=0755,nosuid,nodev  0 0
+tmpfs     /var/tmp          tmpfs  mode=1777,nosuid,nodev  0 0
+tmpfs     /var/lib/systemd  tmpfs  mode=0755,nosuid,nodev  0 0
