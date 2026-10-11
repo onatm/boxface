@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/profiles"
 	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
@@ -110,6 +111,7 @@ func serve(args []string) error {
 		Images:       images.NewRegistry(db, *importDir, *imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
 		Secrets:      secretStore,
+		Profiles:     profiles.NewStore(db),
 		Credentials:  pusher,
 		Gateway:      client,
 		Capacity:     capacity,

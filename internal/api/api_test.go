@@ -21,6 +21,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/profiles"
 	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
@@ -99,6 +100,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		Images:       images.NewRegistry(db, importDir, imagesDir),
 		SSHKeys:      sshkeys.NewStore(db),
 		Secrets:      secrets.NewStore(db, keeper),
+		Profiles:     profiles.NewStore(db),
 		Credentials:  pushes,
 		Gateway:      fakeGateway{},
 		Capacity:     capacity,
@@ -864,5 +866,38 @@ func TestSecretRoutesNeverReturnValues(t *testing.T) {
 	e.db.QueryRow(`SELECT count(*) FROM auth_events WHERE target_id LIKE '%' || ? || '%' OR action LIKE '%' || ? || '%'`, value, value).Scan(&leaked)
 	if leaked != 0 {
 		t.Fatal("the value appears in the audit log")
+	}
+}
+
+func TestProfileRoutes(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	var p profiles.Profile
+	e.do("one", http.MethodPost, "/v1/profiles", map[string]any{"name": "main", "spec": map[string]any{"packages": []string{"ripgrep", "jq"}, "unfree": true}}, http.StatusCreated, &p)
+	if p.Latest == nil || p.Latest.State != "pending" || strings.Join(p.Latest.Spec.Packages, ",") != "jq,ripgrep" {
+		t.Fatalf("created = %+v", p)
+	}
+	if code := e.errorCode("one", http.MethodPost, "/v1/profiles", map[string]any{"name": "main", "spec": map[string]any{}}, http.StatusConflict); code != "name_taken" {
+		t.Fatalf("duplicate: code = %s", code)
+	}
+	e.errorCode("one", http.MethodPost, "/v1/profiles", map[string]any{"name": "x", "spec": map[string]any{"packages": []string{"a; b"}}}, http.StatusBadRequest)
+	e.errorCode("one", http.MethodPost, "/v1/profiles", map[string]any{"name": "x", "spec": map[string]any{"shell": "evil"}}, http.StatusBadRequest)
+	var rev profiles.Revision
+	e.do("one", http.MethodPost, "/v1/profiles/"+p.ID+"/revisions", map[string]any{"spec": map[string]any{"module": "{ pkgs, ... }: { home.packages = [ pkgs.fd ]; }"}}, http.StatusCreated, &rev)
+	if rev.Number != 2 {
+		t.Fatalf("revision = %+v", rev)
+	}
+	e.errorCode("two", http.MethodGet, "/v1/profiles/"+p.ID, nil, http.StatusNotFound)
+	e.errorCode("two", http.MethodPost, "/v1/profiles/"+p.ID+"/revisions", map[string]any{"spec": map[string]any{}}, http.StatusNotFound)
+	var got profiles.Profile
+	e.do("one", http.MethodGet, "/v1/profiles/"+p.ID, nil, http.StatusOK, &got)
+	if len(got.Revisions) != 2 || got.Latest.Spec.Module == "" {
+		t.Fatalf("get = %+v", got)
+	}
+	var list struct {
+		Profiles []profiles.Profile `json:"profiles"`
+	}
+	e.do("two", http.MethodGet, "/v1/profiles", nil, http.StatusOK, &list)
+	if len(list.Profiles) != 0 {
+		t.Fatalf("owner two sees %+v", list.Profiles)
 	}
 }

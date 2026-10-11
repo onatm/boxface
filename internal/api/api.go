@@ -16,6 +16,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/profiles"
 	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
@@ -29,6 +30,7 @@ type Server struct {
 	Images      *images.Registry
 	SSHKeys     *sshkeys.Store
 	Secrets     *secrets.Store
+	Profiles    *profiles.Store
 	Credentials interface {
 		PushOwner(ctx context.Context, ownerID string)
 	}
@@ -86,6 +88,10 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/ssh-keys", s.listSSHKeys)
 	authed("POST /v1/ssh-keys", s.addSSHKey)
 	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
+	authed("GET /v1/profiles", s.listProfiles)
+	authed("POST /v1/profiles", s.createProfile)
+	authed("GET /v1/profiles/{id}", s.getProfile)
+	authed("POST /v1/profiles/{id}/revisions", s.reviseProfile)
 	authed("GET /v1/secrets", s.listSecrets)
 	authed("POST /v1/secrets", s.createSecret)
 	authed("PUT /v1/secrets/{id}", s.updateSecret)
@@ -358,6 +364,65 @@ func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) listProfiles(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Profiles.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": list})
+}
+
+func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string        `json:"name"`
+		Spec profiles.Spec `json:"spec"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	p, err := s.Profiles.Create(r.Context(), owner(r), req.Name, req.Spec)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditProfile(r, "profile.create", p.Name)
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.Profiles.Get(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) reviseProfile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Spec profiles.Spec `json:"spec"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	rev, err := s.Profiles.AddRevision(r.Context(), owner(r), r.PathValue("id"), req.Spec)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditProfile(r, "profile.revise", r.PathValue("id"))
+	writeJSON(w, http.StatusCreated, rev)
+}
+
+func (s *Server) auditProfile(r *http.Request, action, target string) {
+	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), "profile:"+target, clientAddr(r)); err != nil {
+		slog.Error("record profile audit event", "action", action, "error", err)
+	}
+}
+
 func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 	list, err := s.Secrets.List(r.Context(), owner(r))
 	if err != nil {
@@ -571,6 +636,10 @@ func writeError(w http.ResponseWriter, err error) {
 		{lifecycle.ErrNotFound, http.StatusNotFound, "not_found"},
 		{images.ErrNotFound, http.StatusNotFound, "not_found"},
 		{sshkeys.ErrNotFound, http.StatusNotFound, "not_found"},
+		{profiles.ErrInvalid, http.StatusBadRequest, "invalid_request"},
+		{profiles.ErrNotFound, http.StatusNotFound, "not_found"},
+		{profiles.ErrNameTaken, http.StatusConflict, "name_taken"},
+		{profiles.ErrNotReady, http.StatusConflict, "profile_not_ready"},
 		{secrets.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{secrets.ErrNotFound, http.StatusNotFound, "not_found"},
 		{secrets.ErrConflict, http.StatusConflict, "conflict"},
