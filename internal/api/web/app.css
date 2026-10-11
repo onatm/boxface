@@ -173,3 +173,15 @@ fieldset.consumers legend { color: var(--muted); font-size: 0.9rem; padding: 0 0
 label.inline { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text); }
 label.inline input { width: auto; }
 .hint.warn { color: var(--warn); }
+
+.wide { max-width: 44rem; }
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; border-radius: 6px 6px 0 0; background: none; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--code); color: var(--text); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+button.chip { padding: 0.2rem 0.6rem; border-radius: 999px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85rem; }
+textarea.code { min-height: 14rem; }
+pre.log { background: var(--code); border-radius: 6px; padding: 0.6rem 0.75rem; max-height: 18rem; overflow: auto; font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }
+details.revision { border-bottom: 1px solid var(--border); padding: 0.5rem 0; }
+details.revision summary { cursor: pointer; }
+a.button-link { display: inline-block; padding: 0.45rem 0.85rem; border-radius: 6px; background: var(--accent); color: var(--accent-text); font-weight: 600; text-decoration: none; }

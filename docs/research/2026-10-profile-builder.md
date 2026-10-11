@@ -99,3 +99,15 @@ The profile builds inside a builder VM that runs a static Nix as root, so the VM
 The base image (955 MiB, no profile) was imported as `main`, and `boxfacectl create prof` with no flags resolved the owner's `main` profile to revision 2, recorded it on the environment, and was running in 6 s. In a `connect`-style login shell, `/nix` was mounted read-only from `/dev/vdd`; `rg`, `jq`, Node, cargo, mise, and tmux came from `/opt/boxface/profile/bin`; Claude Code answered through its credential shim with the stored token. The guest root filesystem is 922 MiB with 4.7 GiB on the profile drive.
 
 **Finding: the host disk filled.** Staging the base image ran the droplet's 77 GiB disk out of space: four imported 5.4 GiB bundled images, a 5 GiB profile drive, the owner's 7 GiB Nix cache, and about 30 GiB of experiment scratch. SQLite then refused writes (`database or disk is full`) until 13 GiB of spike scratch was removed. Nothing tracks disk used by images, profile drives, or build caches, and nothing removes unused ones; this is recorded as an open question in the plan.
+
+## Profiles Page (P5)
+
+**Date:** 2026-10-11. **Result:** Pass in headless Chromium through `tailscale serve` against real builds, with no console errors.
+
+| Check | Result |
+|---|---|
+| Add `htop` to `main` in the Packages tab and save | Revision 3 built and showed `ready` with its log after 131 s (warm cache) |
+| New profile `ui-check` from a module with a syntax error | Revision 1 showed `failed`, "nix build failed", and the Nix error in the log |
+| Environments page | `prof` shows `main #2` with a "#3 ready" badge |
+
+The `ui-check` profile remains on the droplet; profiles cannot be deleted yet.

@@ -186,17 +186,26 @@ async function start() {
   route();
 }
 
+let refreshTimer = null;
+
+function refreshIn(ms, fn) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => fn().catch((err) => { if (err.status !== 401) fail(err); }), ms);
+}
+
 async function route() {
   if (!session || !session.signed_in) return;
-  const name = (location.hash || "#setup").slice(1);
+  clearTimeout(refreshTimer);
+  const [name, arg] = (location.hash || "#setup").slice(1).split("/");
   const view = views[name] || views.setup;
+  const section = name === "profile" ? "profiles" : name;
   for (const a of document.querySelectorAll("#nav a")) {
-    if (a.getAttribute("href") === "#" + name) a.setAttribute("aria-current", "page");
+    if (a.getAttribute("href") === "#" + section) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
   status("");
   try {
-    await view();
+    await view(arg);
   } catch (err) {
     if (err.status !== 401) fail(err);
   }
@@ -208,12 +217,14 @@ function mainImageID(images) {
 }
 
 views.setup = async () => {
-  const [keys, images, defaults, tokens] = await Promise.all([
-    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/defaults"), api("GET", "/v1/tokens"),
+  const [keys, images, defaults, tokens, profiles] = await Promise.all([
+    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/defaults"), api("GET", "/v1/tokens"), api("GET", "/v1/profiles"),
   ]);
+  const defaultProfile = profiles.profiles.find((p) => p.name === (defaults.profile || "main"));
   const steps = [
     [keys.ssh_keys.length > 0, "Add an SSH key", "The keys new environments accept. boxfacectl login registers its own device key too.", "#keys"],
     [mainImageID(images.images) !== null, "Register an image and mark it main", "New environments use the main image unless told otherwise.", "#images"],
+    [!!defaultProfile && defaultProfile.latest.state === "ready", `Build the ${defaults.profile || "main"} profile`, "The tools every new environment gets, built from Nix packages.", defaultProfile ? `#profile/${defaultProfile.id}` : "#profile/new"],
     [defaults.saved, "Review default sizes", "vCPUs, memory, and disk for boxfacectl create NAME.", "#defaults"],
     [tokens.tokens.length > 0, "Log in from the CLI", "Issue a one-time code for each device.", "#clients"],
   ];
@@ -495,6 +506,151 @@ views.clients = async () => {
       : ident ? null : h("p", { class: "hint" }, "Open this page through tailscale serve to bind your Tailscale login."));
 };
 
+const suggestedPackages = ["claude-code", "codex", "opencode", "pi-coding-agent", "mise", "nodejs", "python3", "go", "rustc", "cargo", "gcc", "gnumake", "ripgrep", "fd", "jq", "gh", "htop", "neovim", "uv"];
+
+function stateBadge(state) {
+  const cls = state === "ready" ? "badge ok" : state === "failed" ? "badge warn" : "badge";
+  return h("span", { class: cls }, state === "building" ? "building…" : state);
+}
+
+views.profiles = async () => {
+  const [data, defaults] = await Promise.all([api("GET", "/v1/profiles"), api("GET", "/v1/defaults")]);
+  const def = defaults.profile || "main";
+  const rows = data.profiles.map((p) => {
+    const actions = [h("a", { href: `#profile/${p.id}` }, "Edit")];
+    if (p.name !== def) {
+      const make = h("button", { type: "button" }, "Make default");
+      make.addEventListener("click", busy(make, "Saving…", async () => {
+        await api("PUT", "/v1/defaults", { image: defaults.image, profile: p.name, vcpus: defaults.vcpus, memory_mib: defaults.memory_mib, disk_gib: defaults.disk_gib });
+        status(`New environments now use ${p.name}.`, "ok");
+        await views.profiles();
+      }));
+      actions.push(" ", make);
+    }
+    return h("tr", {},
+      h("td", {}, h("a", { href: `#profile/${p.id}` }, p.name), p.name === def ? [" ", h("span", { class: "badge main" }, "default")] : null),
+      h("td", {}, `#${p.latest.number} `, stateBadge(p.latest.state)),
+      h("td", { class: "optional" }, p.latest.spec.module ? "Home Manager module" : `${(p.latest.spec.packages || []).length} packages`),
+      h("td", { class: "optional" }, when(p.latest.updated_at)),
+      h("td", { class: "actions" }, actions));
+  });
+  render(
+    h("h1", {}, "Profiles"),
+    h("p", { class: "lead" }, "The tools your environments get, built from Nix packages in an isolated builder. New environments use the default profile; existing ones keep the revision they were created with."),
+    h("p", {}, h("a", { href: "#profile/new", class: "button-link" }, "New profile")),
+    data.profiles.length === 0 ? h("p", { class: "muted" }, "No profiles yet.") : h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Profile"), h("th", {}, "Latest revision"), h("th", { class: "optional" }, "Contents"), h("th", { class: "optional" }, "Updated"), h("th", {}, ""))),
+      h("tbody", {}, rows))));
+  if (data.profiles.some((p) => p.latest.state === "pending" || p.latest.state === "building")) refreshIn(4000, views.profiles);
+};
+
+views.profile = async (id) => {
+  const isNew = !id || id === "new";
+  const profile = isNew ? null : await api("GET", `/v1/profiles/${encodeURIComponent(id)}`);
+  const spec = profile ? profile.latest.spec : { packages: ["claude-code", "codex", "opencode", "pi-coding-agent", "mise", "nodejs"], unfree: true };
+  let packages = [...(spec.packages || [])];
+  let mode = spec.module ? "module" : "packages";
+
+  const name = h("input", { id: "profile-name", required: true, maxlength: 63, spellcheck: "false", value: isNew ? "main" : profile.name });
+  const chips = h("div", { class: "chips", "aria-live": "polite" });
+  const drawChips = () => chips.replaceChildren(...packages.map((p) => {
+    const rm = h("button", { type: "button", class: "chip", "aria-label": `Remove ${p}` }, p, " ×");
+    rm.addEventListener("click", () => { packages = packages.filter((x) => x !== p); drawChips(); });
+    return rm;
+  }));
+  drawChips();
+  const pkgInput = h("input", { id: "package-input", list: "package-suggestions", spellcheck: "false", placeholder: "ripgrep" });
+  const addPkg = () => {
+    for (const p of pkgInput.value.split(/[\s,]+/).filter(Boolean)) if (!packages.includes(p)) packages.push(p);
+    pkgInput.value = "";
+    drawChips();
+  };
+  pkgInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addPkg(); } });
+  const addBtn = h("button", { type: "button" }, "Add");
+  addBtn.addEventListener("click", addPkg);
+  const packagesPane = h("div", { class: "stack" },
+    h("label", { for: "package-input" }, "Nixpkgs packages"),
+    h("div", { class: "command" }, pkgInput, addBtn),
+    h("datalist", { id: "package-suggestions" }, suggestedPackages.map((p) => h("option", { value: p }))),
+    chips,
+    h("p", { class: "hint" }, "Names are nixpkgs attributes, as on search.nixos.org. git, tmux, and chezmoi are always included."));
+
+  const module = h("textarea", { id: "profile-module", class: "code", spellcheck: "false", rows: 14 });
+  module.value = spec.module || "";
+  const fromPackages = h("button", { type: "button" }, "Start from the package list");
+  fromPackages.addEventListener("click", () => {
+    module.value = `{ pkgs, ... }: {\n  home.packages = with pkgs; [\n${packages.map((p) => "    " + p).join("\n")}\n  ];\n}\n`;
+  });
+  const modulePane = h("div", { class: "stack" },
+    h("label", { for: "profile-module" }, "Home Manager module"), module, h("div", {}, fromPackages),
+    h("p", { class: "hint" }, "A Home Manager module evaluated with the server's pinned nixpkgs and Home Manager. Packages it adds reach your environments."));
+
+  const tabPackages = h("button", { type: "button", role: "tab" }, "Packages");
+  const tabModule = h("button", { type: "button", role: "tab" }, "Home Manager module");
+  const setMode = (m) => {
+    mode = m;
+    packagesPane.hidden = m !== "packages";
+    modulePane.hidden = m !== "module";
+    tabPackages.setAttribute("aria-selected", String(m === "packages"));
+    tabModule.setAttribute("aria-selected", String(m === "module"));
+  };
+  tabPackages.addEventListener("click", () => setMode("packages"));
+  tabModule.addEventListener("click", () => setMode("module"));
+  setMode(mode);
+
+  const unfree = h("input", { type: "checkbox", id: "profile-unfree" });
+  unfree.checked = !!spec.unfree;
+  const repo = h("input", { id: "dotfiles-repo", type: "url", spellcheck: "false", placeholder: "https://github.com/you/dotfiles", value: (spec.dotfiles && spec.dotfiles.repo) || "" });
+  const ref = h("input", { id: "dotfiles-ref", spellcheck: "false", placeholder: "main", value: (spec.dotfiles && spec.dotfiles.ref) || "" });
+  const save = h("button", { class: "primary", type: "submit" }, isNew ? "Create and build" : "Save and build");
+  const form = h("form", { class: "stack wide" },
+    isNew ? h("label", { for: "profile-name" }, "Name", name) : null,
+    h("div", { class: "tabs", role: "tablist" }, tabPackages, tabModule),
+    packagesPane, modulePane,
+    h("label", { class: "inline", for: "profile-unfree" }, unfree, " Allow unfree packages (Claude Code needs this)"),
+    h("div", { class: "row" }, h("label", { for: "dotfiles-repo" }, "Dotfiles repository (optional, public https)", repo), h("label", { for: "dotfiles-ref" }, "Branch, tag, or commit", ref)),
+    h("div", {}, save));
+  form.addEventListener("submit", busy(save, "Saving…", async () => {
+    if (mode === "packages") addPkg();
+    const body = { unfree: unfree.checked };
+    if (mode === "module") body.module = module.value;
+    else body.packages = packages;
+    if (repo.value.trim()) body.dotfiles = { repo: repo.value.trim(), ref: ref.value.trim() };
+    if (isNew) {
+      const created = await api("POST", "/v1/profiles", { name: name.value.trim(), spec: body });
+      location.hash = `#profile/${created.id}`;
+    } else {
+      await api("POST", `/v1/profiles/${encodeURIComponent(profile.id)}/revisions`, { spec: body });
+      await views.profile(profile.id);
+    }
+    status("Saved. The build has started; this page updates as it runs.", "ok");
+  }));
+
+  const history = profile ? h("div", {},
+    h("h2", {}, "Revisions"),
+    profile.revisions.map((r, i) => h("details", { class: "revision", open: i === 0 },
+      h("summary", {}, `#${r.number} `, stateBadge(r.state), " ", h("span", { class: "muted" }, when(r.created_at)),
+        r.dotfiles_commit && r.dotfiles_commit !== "none" ? h("span", { class: "muted mono" }, ` dotfiles ${r.dotfiles_commit.slice(0, 12)}`) : null),
+      r.spec.module ? h("p", { class: "hint" }, "Home Manager module") : h("p", { class: "hint" }, (r.spec.packages || []).join(", ") || "only the required tools"),
+      r.error ? h("p", { class: "status error" }, r.error) : null,
+      r.log_tail ? h("pre", { class: "log", tabindex: "0", "aria-label": `Build log for revision ${r.number}` }, r.log_tail) : null))) : null;
+
+  render(
+    h("p", {}, h("a", { href: "#profiles" }, "← Profiles")),
+    h("h1", {}, isNew ? "New profile" : profile.name),
+    h("div", { class: "card" }, form),
+    history);
+  for (const log of document.querySelectorAll("pre.log")) log.scrollTop = log.scrollHeight;
+  if (profile && profile.revisions.some((r) => r.state === "pending" || r.state === "building")) {
+    const poll = async () => {
+      if (location.hash !== `#profile/${profile.id}`) return;
+      if (form.contains(document.activeElement)) refreshIn(4000, poll);
+      else await views.profile(profile.id);
+    };
+    refreshIn(4000, poll);
+  }
+};
+
 views.environments = async () => {
   const [envs, images] = await Promise.all([api("GET", "/v1/environments"), api("GET", "/v1/images")]);
   const mainID = mainImageID(images.images);
@@ -513,7 +669,8 @@ views.environments = async () => {
         h("tbody", {}, live.map((e) => h("tr", {},
           h("td", {}, e.name),
           h("td", {}, h("span", { class: stateClass(e.observed_state) }, e.observed_state), e.error ? h("p", { class: "hint" }, e.error) : null),
-          h("td", {}, aliasOf(e.image_id), mainID && e.image_id !== mainID ? [" ", h("span", { class: "badge warn", title: "main points at a newer image; recreate to use it" }, "main moved")] : null),
+          h("td", {}, aliasOf(e.image_id), mainID && e.image_id !== mainID ? [" ", h("span", { class: "badge warn", title: "main points at a newer image; recreate to use it" }, "main moved")] : null,
+            e.profile ? h("div", { class: "hint" }, `${e.profile} #${e.profile_revision}`, e.profile_latest_ready > e.profile_revision ? [" ", h("span", { class: "badge warn", title: "a newer revision is ready; recreate to use it" }, `#${e.profile_latest_ready} ready`)] : null) : null),
           h("td", { class: "optional" }, `${e.vcpus} vCPU · ${e.memory_mib} MiB`),
           h("td", {}, command(`boxfacectl connect ${e.name}`))))))));
 };

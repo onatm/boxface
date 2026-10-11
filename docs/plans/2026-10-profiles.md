@@ -99,7 +99,7 @@ Confirmed by the owner on 2026-10-10.
 | P2. Model *(done)* | Migrations, profile and revision API, spec validation, generated flake from the server's pins (`internal/profiles/flake.lock`), build key. Both a picker and a module flake evaluated with Nix 2.35 on the droplet | Unit tests: revisions are immutable; equal specs share a build key; invalid package names, modules over a size limit, and non-HTTPS repositories are rejected before a build |
 | P3. Builder *(done)* | Worker builder RPC and VM lifecycle, per-owner cache disks, durable `profile.build` operation with steps, limits, log tail, atomic publication | Integration test on the droplet: a picker profile builds and publishes; a broken module fails with its Nix error in the log tail and publishes nothing; a timeout kills the VM; the builder cannot reach the host, the LAN, or the tailnet |
 | P4. Environments *(done)* | Profile defaults and aliases, `create --profile`, profile drive in `VMSpec`, environment records | `create` uses the default profile; moving `main` leaves existing environments on their revision |
-| P5. Web UI | Profiles page with picker, raw editor, build progress, and log tail | Builds start and report from the browser; cross-origin rules as elsewhere |
+| P5. Web UI *(done)* | Profiles page with picker, raw editor, build progress, and log tail | Builds start and report from the browser; cross-origin rules as elsewhere |
 | P6. Acceptance | Scenarios below on the droplet | Results in `docs/research/` |
 
 ## Acceptance Scenarios
