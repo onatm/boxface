@@ -36,7 +36,7 @@ commands:
   login URL [--code CODE]
   image import SOURCE [--alias NAME]
   image list
-  create NAME [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
+  create NAME [--profile NAME] [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
   connect NAME [--session NAME] [--forward PORT[:GUESTPORT]]...
   list
   inspect NAME
@@ -385,6 +385,7 @@ func (c *cli) create(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	req := lifecycle.CreateRequest{}
 	fs.StringVar(&req.ImageID, "image", "", "image ID or alias; the server default when omitted")
+	fs.StringVar(&req.Profile, "profile", "", "profile name; the server default (main) when omitted")
 	fs.IntVar(&req.VCPUs, "vcpus", 0, "vCPUs; the server default when omitted")
 	fs.IntVar(&req.MemoryMiB, "memory-mib", 0, "guest memory in MiB; the server default when omitted")
 	fs.IntVar(&req.DiskGiB, "disk-gib", 0, "data disk size in GiB; the server default when omitted")
@@ -466,13 +467,24 @@ func printEnvironment(w io.Writer, e lifecycle.Environment) {
 	for _, row := range [][2]string{
 		{"name", e.Name}, {"id", e.ID}, {"state", e.ObservedState}, {"desired", e.DesiredState},
 		{"image", e.ImageID}, {"vcpus", fmt.Sprint(e.VCPUs)}, {"memory", fmt.Sprintf("%d MiB", e.MemoryMiB)},
-		{"disk", e.DiskID + " (" + e.DiskRetention + ")"}, {"error", e.Error},
+		{"disk", e.DiskID + " (" + e.DiskRetention + ")"}, {"profile", profileSummary(e)}, {"error", e.Error},
 	} {
 		if row[1] != "" {
 			fmt.Fprintf(tw, "%s:\t%s\n", row[0], row[1])
 		}
 	}
 	tw.Flush()
+}
+
+func profileSummary(e lifecycle.Environment) string {
+	if e.Profile == "" {
+		return ""
+	}
+	s := fmt.Sprintf("%s revision %d", e.Profile, e.ProfileNumber)
+	if e.ProfileLatest > e.ProfileNumber {
+		s += fmt.Sprintf(" (revision %d is ready; recreate to use it)", e.ProfileLatest)
+	}
+	return s
 }
 
 func (c *cli) startStop(ctx context.Context, command string, args []string) error {

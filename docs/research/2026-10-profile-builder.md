@@ -91,3 +91,11 @@ The profile builds inside a builder VM that runs a static Nix as root, so the VM
 1. **Flakes are evaluated in pure mode,** so `builtins.fetchurl` without a hash is refused before any connection is attempted; network access from user code happens only in build steps, which the firewall confines to the internet.
 2. **Published drives were writable by `boxface-vm`,** the user every VMM runs as, so a compromised VMM could have modified another environment's profile; the worker now publishes them owned by root.
 3. **Step headings in the log read as errors.** The builder's log marked each step with its failure message; it now logs what it is doing and keeps the failure message for the result only.
+
+## Environments from Profiles (P4)
+
+**Date:** 2026-10-11. **Result:** Pass on the droplet.
+
+The base image (955 MiB, no profile) was imported as `main`, and `boxfacectl create prof` with no flags resolved the owner's `main` profile to revision 2, recorded it on the environment, and was running in 6 s. In a `connect`-style login shell, `/nix` was mounted read-only from `/dev/vdd`; `rg`, `jq`, Node, cargo, mise, and tmux came from `/opt/boxface/profile/bin`; Claude Code answered through its credential shim with the stored token. The guest root filesystem is 922 MiB with 4.7 GiB on the profile drive.
+
+**Finding: the host disk filled.** Staging the base image ran the droplet's 77 GiB disk out of space: four imported 5.4 GiB bundled images, a 5 GiB profile drive, the owner's 7 GiB Nix cache, and about 30 GiB of experiment scratch. SQLite then refused writes (`database or disk is full`) until 13 GiB of spike scratch was removed. Nothing tracks disk used by images, profile drives, or build caches, and nothing removes unused ones; this is recorded as an open question in the plan.

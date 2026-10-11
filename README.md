@@ -185,6 +185,10 @@ The image needs `tmux` in its profile; `experiments/gate-c/profile/flake.nix` in
 
 Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp` and `/run` are in memory. The root filesystem is read-only, there is no sudo, and Docker runs rootless as `dev`.
 
+### Profiles
+
+A profile is the set of tools your environments get, built from Nix packages (or a Home Manager module) in an isolated builder VM and attached to environments as a read-only drive. Profiles are managed through the API (`/v1/profiles`); the web UI page comes next. `boxfacectl create NAME` uses the profile named `main` once it has a ready revision, and `--profile NAME` picks another. An environment keeps the revision it was created with; `boxfacectl inspect` shows when a newer one is ready. Profiles need the base image and builder image from `experiments/profile-builder/01-images.sh`: import the base image as `main`, and copy the builder's `vmlinux` and `rootfs.ext4` to `/var/lib/boxface/builder`.
+
 ### Agent credentials
 
 Save tokens and keys once on the web UI's Credentials page instead of signing in to tools in every environment. Each credential is given to the commands you name, such as `claude`, `gh`, or `terraform`, or to every session:

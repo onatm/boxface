@@ -29,6 +29,7 @@ type CreateRequest struct {
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB int    `json:"memory_mib"`
 	DiskGiB   int    `json:"disk_gib"`
+	Profile   string `json:"profile,omitempty"`
 }
 
 type Accepted struct {
@@ -57,6 +58,9 @@ type Environment struct {
 	Error         string `json:"error,omitempty"`
 	DiskID        string `json:"disk_id"`
 	DiskRetention string `json:"disk_retention"`
+	Profile       string `json:"profile,omitempty"`
+	ProfileNumber int    `json:"profile_revision,omitempty"`
+	ProfileLatest int    `json:"profile_latest_ready,omitempty"`
 }
 
 type Defaults struct {
@@ -64,9 +68,10 @@ type Defaults struct {
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB int    `json:"memory_mib"`
 	DiskGiB   int    `json:"disk_gib"`
+	Profile   string `json:"profile"`
 }
 
-var builtinDefaults = Defaults{Image: "main", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}
+var builtinDefaults = Defaults{Image: "main", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Profile: "main"}
 
 type createParams struct {
 	CreateRequest
@@ -129,6 +134,14 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, re
 		if resolved.ImageID, err = resolveImage(ctx, tx, ref); err != nil {
 			return "", nil, err
 		}
+		profileRef, explicit := resolved.Profile, resolved.Profile != ""
+		if !explicit {
+			profileRef = d.Profile
+		}
+		revisionID, err := resolveProfile(ctx, tx, ownerID, profileRef, explicit)
+		if err != nil {
+			return "", nil, err
+		}
 		keys, err := authorizedKeys(ctx, tx, ownerID)
 		if err != nil {
 			return "", nil, err
@@ -144,8 +157,8 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, re
 			return "", nil, err
 		}
 		envID, diskID, now := id.New(), id.New(), timestamp()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO environments (id, owner_id, name, image_id, vcpus, memory_mib, desired_state, observed_state, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'running', 'pending', ?, ?)`, envID, ownerID, resolved.Name, resolved.ImageID, resolved.VCPUs, resolved.MemoryMiB, now, now); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO environments (id, owner_id, name, image_id, vcpus, memory_mib, desired_state, observed_state, created_at, updated_at, profile_revision_id)
+			VALUES (?, ?, ?, ?, ?, ?, 'running', 'pending', ?, ?, ?)`, envID, ownerID, resolved.Name, resolved.ImageID, resolved.VCPUs, resolved.MemoryMiB, now, now, revisionID); err != nil {
 			return "", nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO data_disks (id, owner_id, environment_id, size_gib, retention, created_at, updated_at)
@@ -170,6 +183,25 @@ func resolveImage(ctx context.Context, q queryer, ref string) (string, error) {
 		return "", ErrImageNotReady
 	}
 	return imageID, nil
+}
+
+func resolveProfile(ctx context.Context, q queryer, ownerID, ref string, explicit bool) (any, error) {
+	var revisionID, state string
+	err := q.QueryRowContext(ctx, `SELECT r.id, r.state FROM profile_revisions r JOIN profiles p ON p.id = r.profile_id
+		WHERE p.owner_id = ? AND (p.id = ? OR p.name = ?) ORDER BY r.state = 'ready' DESC, r.number DESC LIMIT 1`, ownerID, ref, ref).Scan(&revisionID, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		if !explicit {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: no profile named %q", ErrNotFound, ref)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if state != "ready" {
+		return nil, fmt.Errorf("%w: profile %q has no ready revision yet (latest is %s)", ErrProfileNotReady, ref, state)
+	}
+	return revisionID, nil
 }
 
 func authorizedKeys(ctx context.Context, q queryer, ownerID string) ([]string, error) {
@@ -197,8 +229,8 @@ func authorizedKeys(ctx context.Context, q queryer, ownerID string) ([]string, e
 
 func defaults(ctx context.Context, q queryer, ownerID string) (Defaults, error) {
 	var d Defaults
-	err := q.QueryRowContext(ctx, `SELECT image, vcpus, memory_mib, disk_gib FROM owner_defaults WHERE owner_id = ?`, ownerID).
-		Scan(&d.Image, &d.VCPUs, &d.MemoryMiB, &d.DiskGiB)
+	err := q.QueryRowContext(ctx, `SELECT image, vcpus, memory_mib, disk_gib, profile FROM owner_defaults WHERE owner_id = ?`, ownerID).
+		Scan(&d.Image, &d.VCPUs, &d.MemoryMiB, &d.DiskGiB, &d.Profile)
 	if errors.Is(err, sql.ErrNoRows) {
 		return builtinDefaults, nil
 	}
@@ -219,9 +251,12 @@ func (s *Service) SetDefaults(ctx context.Context, ownerID string, d Defaults) e
 	if d.Image == "" || d.VCPUs < 1 || d.MemoryMiB < 128 || d.DiskGiB < 1 {
 		return fmt.Errorf("%w: image is required; vcpus must be at least 1, memory_mib at least 128, disk_gib at least 1", ErrInvalid)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO owner_defaults (owner_id, image, vcpus, memory_mib, disk_gib, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+	if d.Profile == "" {
+		d.Profile = builtinDefaults.Profile
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO owner_defaults (owner_id, image, vcpus, memory_mib, disk_gib, profile, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner_id) DO UPDATE SET image = excluded.image, vcpus = excluded.vcpus, memory_mib = excluded.memory_mib,
-		disk_gib = excluded.disk_gib, updated_at = excluded.updated_at`, ownerID, d.Image, d.VCPUs, d.MemoryMiB, d.DiskGiB, timestamp())
+		disk_gib = excluded.disk_gib, profile = excluded.profile, updated_at = excluded.updated_at`, ownerID, d.Image, d.VCPUs, d.MemoryMiB, d.DiskGiB, d.Profile, timestamp())
 	return err
 }
 
@@ -356,9 +391,16 @@ func (s *Service) Operation(ctx context.Context, ownerID, id string) (Operation,
 
 func (s *Service) Environment(ctx context.Context, ownerID, id string) (Environment, error) {
 	env := Environment{ID: id}
-	err := s.db.QueryRowContext(ctx, `SELECT e.name, e.image_id, e.vcpus, e.memory_mib, e.desired_state, e.observed_state, e.error, d.id, d.retention
-		FROM environments e JOIN data_disks d ON d.environment_id = e.id WHERE e.id = ? AND e.owner_id = ?`, id, ownerID).
-		Scan(&env.Name, &env.ImageID, &env.VCPUs, &env.MemoryMiB, &env.DesiredState, &env.ObservedState, &env.Error, &env.DiskID, &env.DiskRetention)
+	var profile sql.NullString
+	var number, latest sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT e.name, e.image_id, e.vcpus, e.memory_mib, e.desired_state, e.observed_state, e.error, d.id, d.retention,
+			p.name, r.number, (SELECT max(number) FROM profile_revisions WHERE profile_id = p.id AND state = 'ready')
+		FROM environments e JOIN data_disks d ON d.environment_id = e.id
+		LEFT JOIN profile_revisions r ON r.id = e.profile_revision_id LEFT JOIN profiles p ON p.id = r.profile_id
+		WHERE e.id = ? AND e.owner_id = ?`, id, ownerID).
+		Scan(&env.Name, &env.ImageID, &env.VCPUs, &env.MemoryMiB, &env.DesiredState, &env.ObservedState, &env.Error, &env.DiskID, &env.DiskRetention,
+			&profile, &number, &latest)
+	env.Profile, env.ProfileNumber, env.ProfileLatest = profile.String, int(number.Int64), int(latest.Int64)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Environment{}, ErrNotFound
 	}

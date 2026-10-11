@@ -98,7 +98,7 @@ Confirmed by the owner on 2026-10-10.
 | P1. Images *(done)* | Base image without a profile, builder image, guest `/nix` mount and personalisation from `/nix/boxface`; worker attaches an optional profile drive. The images are built by `experiments/profile-builder/01-images.sh` | Integration test: a guest boots with a profile drive and runs a tool from it; a bundled image still boots without one |
 | P2. Model *(done)* | Migrations, profile and revision API, spec validation, generated flake from the server's pins (`internal/profiles/flake.lock`), build key. Both a picker and a module flake evaluated with Nix 2.35 on the droplet | Unit tests: revisions are immutable; equal specs share a build key; invalid package names, modules over a size limit, and non-HTTPS repositories are rejected before a build |
 | P3. Builder *(done)* | Worker builder RPC and VM lifecycle, per-owner cache disks, durable `profile.build` operation with steps, limits, log tail, atomic publication | Integration test on the droplet: a picker profile builds and publishes; a broken module fails with its Nix error in the log tail and publishes nothing; a timeout kills the VM; the builder cannot reach the host, the LAN, or the tailnet |
-| P4. Environments | Profile defaults and aliases, `create --profile`, profile drive in `VMSpec`, environment records | `create` uses the default profile; moving `main` leaves existing environments on their revision |
+| P4. Environments *(done)* | Profile defaults and aliases, `create --profile`, profile drive in `VMSpec`, environment records | `create` uses the default profile; moving `main` leaves existing environments on their revision |
 | P5. Web UI | Profiles page with picker, raw editor, build progress, and log tail | Builds start and report from the browser; cross-origin rules as elsewhere |
 | P6. Acceptance | Scenarios below on the droplet | Results in `docs/research/` |
 
@@ -118,4 +118,4 @@ Confirmed by the owner on 2026-10-10.
 
 - How users without Nix knowledge find package names; a search proxied from `search.nixos.org` is a candidate after P5.
 - Whether `home.file` and session variables from raw modules should be applied (today only `home.packages` content reaches the guest; Gate B exported `home-path` only).
-- Garbage collection of unused profile drives and cache disks, which grow by several GiB per revision.
+- Garbage collection of unused profile drives and cache disks, which grow by several GiB per revision. *Raised by P4:* the droplet's disk filled during P4 (profile drives, a 7 GiB per-owner cache, imported images, and experiment scratch), which stopped SQLite writes until space was freed; capacity checks count environment data disks only. Disk headroom and accounting for drives and caches are needed before other users build profiles.

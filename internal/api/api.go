@@ -655,6 +655,7 @@ func writeError(w http.ResponseWriter, err error) {
 		{lifecycle.ErrNameTaken, http.StatusConflict, "name_taken"},
 		{lifecycle.ErrEnvironmentDeleted, http.StatusConflict, "environment_deleted"},
 		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},
+		{lifecycle.ErrProfileNotReady, http.StatusConflict, "profile_not_ready"},
 		{lifecycle.ErrIdempotencyConflict, http.StatusConflict, "idempotency_conflict"},
 		{lifecycle.ErrCapacity, http.StatusConflict, "capacity_exceeded"},
 		{errNotRunning, http.StatusConflict, "environment_not_running"},

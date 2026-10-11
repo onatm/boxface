@@ -23,20 +23,21 @@ const (
 )
 
 type fakeWorker struct {
-	mu      sync.Mutex
-	calls   []string
-	disks   map[string]bool
-	keys    map[string][]string
-	vms     map[string]bool
-	block   map[string]chan struct{}
-	entered chan string
-	fail    map[string]error
-	flaky   map[string]int
-	active  map[string]bool
+	mu       sync.Mutex
+	calls    []string
+	disks    map[string]bool
+	keys     map[string][]string
+	profiles map[string]string
+	vms      map[string]bool
+	block    map[string]chan struct{}
+	entered  chan string
+	fail     map[string]error
+	flaky    map[string]int
+	active   map[string]bool
 }
 
 func newFakeWorker() *fakeWorker {
-	return &fakeWorker{disks: map[string]bool{}, keys: map[string][]string{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
+	return &fakeWorker{disks: map[string]bool{}, keys: map[string][]string{}, profiles: map[string]string{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
 }
 
 func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error {
@@ -81,7 +82,11 @@ func (f *fakeWorker) RemoveNetwork(ctx context.Context, id string) error {
 	return f.call(ctx, "RemoveNetwork", nil)
 }
 func (f *fakeWorker) StartVM(ctx context.Context, spec VMSpec) error {
-	return f.call(ctx, "StartVM", func() { f.vms[spec.EnvironmentID] = true; f.keys[spec.EnvironmentID] = spec.AuthorizedKeys })
+	return f.call(ctx, "StartVM", func() {
+		f.vms[spec.EnvironmentID] = true
+		f.keys[spec.EnvironmentID] = spec.AuthorizedKeys
+		f.profiles[spec.EnvironmentID] = spec.ProfileID
+	})
 }
 func (f *fakeWorker) StopVM(ctx context.Context, id string) error {
 	return f.call(ctx, "StopVM", func() { delete(f.vms, id) })
@@ -761,5 +766,94 @@ func TestStartedHookRunsAfterStartVM(t *testing.T) {
 	want := acc.EnvironmentID + " after StartVM"
 	if len(started) != 2 || started[0] != want || started[1] != want {
 		t.Fatalf("started = %v", started)
+	}
+}
+
+func TestCreateResolvesProfiles(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+
+	plain, err := s.Create(ctx, owner, "", CreateRequest{Name: "plain", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, plain.EnvironmentID); env.Profile != "" || w.profiles[plain.EnvironmentID] != "" {
+		t.Fatalf("without a main profile: %+v, drive %q", env, w.profiles[plain.EnvironmentID])
+	}
+
+	for _, q := range []string{
+		`INSERT INTO profiles (id, owner_id, name, created_at) VALUES ('prof-main', 'owner-1', 'main', 'x'), ('prof-tools', 'owner-1', 'tools', 'x')`,
+		`INSERT INTO profile_revisions (id, profile_id, number, spec, build_key, state, created_at, updated_at) VALUES
+			('rev-1', 'prof-main', 1, '{}', 'key-one', 'pending', 'x', 'x'),
+			('rev-t', 'prof-tools', 1, '{}', 'key-tools', 'ready', 'x', 'x')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "early", ImageID: image}); !errors.Is(err, ErrProfileNotReady) {
+		t.Fatalf("default profile still building: err = %v", err)
+	}
+	db.Exec(`UPDATE profile_revisions SET state = 'ready' WHERE id = 'rev-1'`)
+	first, err := s.Create(ctx, owner, "", CreateRequest{Name: "first", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.Profile != "main" || env.ProfileNumber != 1 || env.ProfileLatest != 1 || w.profiles[first.EnvironmentID] != "key-one" {
+		t.Fatalf("with main ready: %+v, drive %q", env, w.profiles[first.EnvironmentID])
+	}
+
+	db.Exec(`INSERT INTO profile_revisions (id, profile_id, number, spec, build_key, state, created_at, updated_at) VALUES ('rev-2', 'prof-main', 2, '{}', 'key-two', 'ready', 'x', 'x')`)
+	second, err := s.Create(ctx, owner, "", CreateRequest{Name: "second", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.ProfileNumber != 1 || env.ProfileLatest != 2 {
+		t.Fatalf("main moved but first should stay on revision 1: %+v", env)
+	}
+	if env := mustEnvironment(t, s, second.EnvironmentID); env.ProfileNumber != 2 || w.profiles[second.EnvironmentID] != "key-two" {
+		t.Fatalf("second = %+v, drive %q", env, w.profiles[second.EnvironmentID])
+	}
+	if _, err := s.Stop(ctx, owner, "", first.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Start(ctx, owner, "", first.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if w.profiles[first.EnvironmentID] != "key-one" {
+		t.Fatalf("restart attached %q, want the recorded revision", w.profiles[first.EnvironmentID])
+	}
+
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "x", ImageID: image, Profile: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("explicit missing profile: err = %v", err)
+	}
+	tools, err := s.Create(ctx, owner, "", CreateRequest{Name: "tools", ImageID: image, Profile: "tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, tools.EnvironmentID); env.Profile != "tools" {
+		t.Fatalf("explicit profile = %+v", env)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{Image: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 4, Profile: "tools"}); err != nil {
+		t.Fatal(err)
+	}
+	viaDefault, err := s.Create(ctx, owner, "", CreateRequest{Name: "viadefault", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, viaDefault.EnvironmentID); env.Profile != "tools" {
+		t.Fatalf("default profile = %+v", env)
+	}
+	if _, err := s.Create(ctx, otherOwner, "", CreateRequest{Name: "theirs", ImageID: image, Profile: "main"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another owner used this owner's profile: err = %v", err)
 	}
 }

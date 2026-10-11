@@ -209,10 +209,11 @@ func (r *Runner) runStep(ctx context.Context, s step, j job) error {
 func (r *Runner) load(ctx context.Context, id string) (job, error) {
 	j := job{id: id}
 	var params string
-	err := r.db.QueryRowContext(ctx, `SELECT o.type, o.params, e.id, e.image_id, e.vcpus, e.memory_mib, d.id, d.size_gib
+	err := r.db.QueryRowContext(ctx, `SELECT o.type, o.params, e.id, e.image_id, e.vcpus, e.memory_mib, d.id, d.size_gib, coalesce(pr.build_key, '')
 		FROM operations o JOIN environments e ON e.id = o.target_id JOIN data_disks d ON d.environment_id = e.id
+		LEFT JOIN profile_revisions pr ON pr.id = e.profile_revision_id
 		WHERE o.id = ?`, id).
-		Scan(&j.opType, &params, &j.env.EnvironmentID, &j.env.ImageID, &j.env.VCPUs, &j.env.MemoryMiB, &j.disk.DiskID, &j.disk.SizeGiB)
+		Scan(&j.opType, &params, &j.env.EnvironmentID, &j.env.ImageID, &j.env.VCPUs, &j.env.MemoryMiB, &j.disk.DiskID, &j.disk.SizeGiB, &j.env.ProfileID)
 	if err != nil {
 		return job{}, fmt.Errorf("load operation %s: %w", id, err)
 	}

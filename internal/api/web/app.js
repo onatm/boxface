@@ -286,15 +286,17 @@ views.defaults = async () => {
     return [input, h("label", { for: name }, label, input)];
   };
   const [image, imageLabel] = field("Image (alias or ID)", "image", d.image, { list: "image-options", required: true });
+  const [profile, profileLabel] = field("Profile", "profile", d.profile || "main", { required: true });
   const [vcpus, vcpusLabel] = field("vCPUs", "vcpus", d.vcpus, { type: "number", min: 1, required: true });
   const [memory, memoryLabel] = field("Memory (MiB)", "memory", d.memory_mib, { type: "number", min: 128, step: 128, required: true });
   const [disk, diskLabel] = field("Disk (GiB)", "disk", d.disk_gib, { type: "number", min: 1, required: true });
   const save = h("button", { class: "primary", type: "submit" }, "Save defaults");
   const form = h("form", { class: "stack" },
     imageLabel, h("datalist", { id: "image-options" }, [...imageOptions].map((o) => h("option", { value: o }))),
+    profileLabel,
     h("div", { class: "row" }, vcpusLabel, memoryLabel, diskLabel), h("div", {}, save));
   form.addEventListener("submit", busy(save, "Saving…", async () => {
-    await api("PUT", "/v1/defaults", { image: image.value.trim(), vcpus: +vcpus.value, memory_mib: +memory.value, disk_gib: +disk.value });
+    await api("PUT", "/v1/defaults", { image: image.value.trim(), profile: profile.value.trim(), vcpus: +vcpus.value, memory_mib: +memory.value, disk_gib: +disk.value });
     await views.defaults();
     status("Defaults saved. They apply to environments created from now on.", "ok");
   }));
