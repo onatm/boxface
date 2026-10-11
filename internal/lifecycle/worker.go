@@ -17,6 +17,7 @@ type VMSpec struct {
 	VCPUs          int
 	MemoryMiB      int
 	AuthorizedKeys []string
+	ProfileID      string
 }
 
 type Worker interface {

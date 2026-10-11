@@ -52,7 +52,7 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	gid, _ := strconv.Atoi(u.Gid)
 	h := &Host{cfg: cfg, vmUID: uid, vmGID: gid, listeners: map[string][]net.Listener{}, broker: newBroker(cmp.Or(cfg.CredentialWait, 35*time.Second))}
 
-	for _, dir := range []string{h.environmentsDir(), h.disksDir()} {
+	for _, dir := range []string{h.environmentsDir(), h.disksDir(), h.profilesDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
@@ -83,6 +83,10 @@ func (h *Host) Close() {
 func (h *Host) environmentsDir() string { return filepath.Join(h.cfg.StateDir, "environments") }
 func (h *Host) disksDir() string        { return filepath.Join(h.cfg.StateDir, "disks") }
 func (h *Host) envDir(id string) string { return filepath.Join(h.environmentsDir(), id) }
+func (h *Host) profilesDir() string     { return filepath.Join(h.cfg.StateDir, "profiles") }
+func (h *Host) profilePath(id string) string {
+	return filepath.Join(h.profilesDir(), id+".img")
+}
 func (h *Host) diskPath(id string) string {
 	return filepath.Join(h.disksDir(), id+".ext4")
 }

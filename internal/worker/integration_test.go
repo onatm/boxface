@@ -357,3 +357,73 @@ func TestIntegrationPeerCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrationProfileDrive(t *testing.T) {
+	cfg := integrationConfig(t)
+	base, profile := os.Getenv("BOXFACE_IT_BASE"), os.Getenv("BOXFACE_IT_PROFILE")
+	if base == "" || profile == "" {
+		t.Skip("BOXFACE_IT_BASE (a directory with vmlinux and rootfs.ext4 holding no profile) and BOXFACE_IT_PROFILE (a profile drive) are not set")
+	}
+	ctx := context.Background()
+	if err := os.Symlink(base, filepath.Join(cfg.ImagesDir, "it-base")); err != nil {
+		t.Fatal(err)
+	}
+	h, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if err := os.Symlink(profile, h.profilePath("it-profile")); err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := make([]byte, 4)
+	rand.Read(suffix)
+	id := "it-p-" + hex.EncodeToString(suffix)
+	t.Cleanup(func() {
+		exec.Command("systemctl", "stop", unitName(id)).Run()
+		exec.Command("ip", "link", "del", "dev", tapName(id)).Run()
+	})
+	publicKey, err := os.ReadFile(filepath.Join(cfg.StateDir, "key.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk := lifecycle.DiskSpec{DiskID: id + "-disk", EnvironmentID: id, SizeGiB: 4}
+	spec := lifecycle.VMSpec{EnvironmentID: id, DiskID: disk.DiskID, ImageID: "it-base", VCPUs: 1, MemoryMiB: 1024,
+		AuthorizedKeys: []string{strings.TrimSpace(string(publicKey))}, ProfileID: "it-profile"}
+	started := time.Now()
+	for name, err := range map[string]error{"CreateDisk": h.CreateDisk(ctx, disk), "CreateNetwork": h.CreateNetwork(ctx, id)} {
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if err := h.StartVM(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.WaitReady(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("base image with a profile drive: create to ready in %s", time.Since(started).Round(time.Millisecond))
+
+	a, err := h.readAddressing(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := guestSSH(cfg, a.Guest, "findmnt -no SOURCE,OPTIONS /nix | cut -d, -f1; readlink -f /opt/boxface/profile | cut -c1-11; bash -lc 'claude --version'; touch /nix/x 2>&1 | grep -c 'Read-only'; for _ in $(seq 1 30); do [ -f ~/.local/state/boxface/personalisation ] && break; sleep 1; done; grep -c '^revision: ' ~/.local/state/boxface/personalisation")
+	if err != nil {
+		t.Fatalf("guest checks: %v", err)
+	}
+	if want := "/dev/vdd ro\n/nix/store/\n"; !strings.HasPrefix(out, want) || !strings.Contains(out, "(Claude Code)") || !strings.HasSuffix(out, "1\n1") {
+		t.Fatalf("guest checks = %q", out)
+	}
+
+	if err := h.StopVM(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.RemoveNetwork(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.RemoveDisk(ctx, disk.DiskID); err != nil {
+		t.Fatal(err)
+	}
+}

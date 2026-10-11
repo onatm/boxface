@@ -116,6 +116,30 @@ func TestFirecrackerConfig(t *testing.T) {
 	}
 }
 
+func TestFirecrackerConfigAttachesProfileDrive(t *testing.T) {
+	h := testHost(t)
+	a, _ := h.addressing(1)
+	b, err := h.firecrackerConfig(lifecycle.VMSpec{EnvironmentID: "env-a", DiskID: "disk-a", ImageID: "base", VCPUs: 1, MemoryMiB: 512, ProfileID: "rev-1"}, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Drives []struct {
+			ID       string `json:"drive_id"`
+			Path     string `json:"path_on_host"`
+			Root     bool   `json:"is_root_device"`
+			ReadOnly bool   `json:"is_read_only"`
+		} `json:"drives"`
+	}
+	json.Unmarshal(b, &cfg)
+	if len(cfg.Drives) != 4 || cfg.Drives[3].ID != "profile" || cfg.Drives[3].Path != filepath.Join(h.cfg.StateDir, "profiles", "rev-1.img") || !cfg.Drives[3].ReadOnly || cfg.Drives[3].Root {
+		t.Fatalf("drives = %+v", cfg.Drives)
+	}
+	if err := h.StartVM(context.Background(), lifecycle.VMSpec{EnvironmentID: "env-a", DiskID: "disk-a", ImageID: "base", ProfileID: "../escape"}); err == nil || !strings.Contains(err.Error(), "invalid identifier") {
+		t.Fatalf("profile ID with a path: err = %v", err)
+	}
+}
+
 func TestFirewallRuleset(t *testing.T) {
 	rules := testHost(t).firewallRuleset()
 	for _, want := range []string{

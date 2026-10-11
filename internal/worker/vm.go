@@ -68,17 +68,21 @@ func (h *Host) firecrackerConfig(spec lifecycle.VMSpec, a addressing) ([]byte, e
 		IsRootDevice bool   `json:"is_root_device"`
 		IsReadOnly   bool   `json:"is_read_only"`
 	}
+	drives := []drive{
+		{"rootfs", filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"), true, true},
+		{"data", h.diskPath(spec.DiskID), false, false},
+		{"keys", filepath.Join(dir, keysImage), false, true},
+	}
+	if spec.ProfileID != "" {
+		drives = append(drives, drive{"profile", h.profilePath(spec.ProfileID), false, true})
+	}
 	config := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": filepath.Join(h.cfg.ImagesDir, spec.ImageID, "vmlinux"),
 			"boot_args": fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off net.ifnames=0 ip=%s::%s:255.255.255.252::eth0:off",
 				a.Guest, a.Host),
 		},
-		"drives": []drive{
-			{"rootfs", filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"), true, true},
-			{"data", h.diskPath(spec.DiskID), false, false},
-			{"keys", filepath.Join(dir, keysImage), false, true},
-		},
+		"drives":         drives,
 		"machine-config": map[string]any{"vcpu_count": spec.VCPUs, "mem_size_mib": spec.MemoryMiB},
 		"network-interfaces": []map[string]any{{
 			"iface_id":      "eth0",
@@ -96,6 +100,11 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 			return err
 		}
 	}
+	if spec.ProfileID != "" {
+		if err := validID(spec.ProfileID); err != nil {
+			return err
+		}
+	}
 	unit := unitName(spec.EnvironmentID)
 	if active, err := unitActive(ctx, unit); err != nil {
 		return err
@@ -107,11 +116,15 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 	if err != nil {
 		return fmt.Errorf("environment %s network: %w", spec.EnvironmentID, err)
 	}
-	for _, p := range []string{
+	required := []string{
 		filepath.Join(h.cfg.ImagesDir, spec.ImageID, "vmlinux"),
 		filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"),
 		h.diskPath(spec.DiskID),
-	} {
+	}
+	if spec.ProfileID != "" {
+		required = append(required, h.profilePath(spec.ProfileID))
+	}
+	for _, p := range required {
 		if _, err := os.Stat(p); err != nil {
 			return err
 		}
