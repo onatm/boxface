@@ -22,6 +22,8 @@ type Backend interface {
 	Endpoint(ctx context.Context, environmentID string) (netip.Addr, error)
 	HostKey(ctx context.Context, diskID string) (string, error)
 	SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error
+	StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error
+	BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error)
 }
 
 type credentialsRequest struct {
@@ -82,6 +84,13 @@ func NewHandler(b Backend) http.Handler {
 		return b.StartVM(r.Context(), spec)
 	})
 	handle("POST /v1/vms/stop", byID(b.StopVM))
+	handle("POST /v1/builds/start", func(r *http.Request) error {
+		var spec lifecycle.BuildSpec
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&spec); err != nil {
+			return fmt.Errorf("decode request: %w", err)
+		}
+		return b.StartBuild(r.Context(), spec)
+	})
 	handle("PUT /v1/environments/{id}/credentials", func(r *http.Request) error {
 		var req credentialsRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
@@ -101,6 +110,7 @@ func NewHandler(b Backend) http.Handler {
 		})
 	}
 	get("GET /v1/inventory", func(r *http.Request) (any, error) { return b.Inventory(r.Context()) })
+	get("GET /v1/builds/{id}", func(r *http.Request) (any, error) { return b.BuildStatus(r.Context(), r.PathValue("id")) })
 	get("GET /v1/environments/{id}/endpoint", func(r *http.Request) (any, error) {
 		addr, err := b.Endpoint(r.Context(), r.PathValue("id"))
 		return endpointResponse{addr}, err
@@ -236,6 +246,16 @@ func (c *Client) HostKey(ctx context.Context, diskID string) (string, error) {
 
 func (c *Client) SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error {
 	return c.do(ctx, http.MethodPut, "/v1/environments/"+url.PathEscape(environmentID)+"/credentials", credentialsRequest{creds}, nil)
+}
+
+func (c *Client) StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error {
+	return c.do(ctx, http.MethodPost, "/v1/builds/start", spec, nil)
+}
+
+func (c *Client) BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error) {
+	var st lifecycle.BuildStatus
+	err := c.do(ctx, http.MethodGet, "/v1/builds/"+url.PathEscape(buildID), nil, &st)
+	return st, err
 }
 
 func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {

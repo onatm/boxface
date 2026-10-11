@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/profiles"
 )
 
 const itImageID = "it-image"
@@ -425,5 +426,96 @@ func TestIntegrationProfileDrive(t *testing.T) {
 	}
 	if err := h.RemoveDisk(ctx, disk.DiskID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestIntegrationBuild(t *testing.T) {
+	cfg := integrationConfig(t)
+	cfg.BuilderImage = os.Getenv("BOXFACE_IT_BUILDER")
+	if cfg.BuilderImage == "" {
+		t.Skip("BOXFACE_IT_BUILDER (a directory with the builder's vmlinux and rootfs.ext4) is not set")
+	}
+	ctx := context.Background()
+	h, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	t.Cleanup(func() {
+		exec.Command("ip", "link", "del", "dev", buildTap).Run()
+	})
+	suffix := make([]byte, 4)
+	rand.Read(suffix)
+	owner := "it-owner-" + hex.EncodeToString(suffix)
+	spec := func(id string, s profiles.Spec) lifecycle.BuildSpec {
+		n, err := s.Normalize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lifecycle.BuildSpec{BuildID: id, OwnerID: owner, Files: profiles.Flake(n), VCPUs: 2, MemoryMiB: 2048, TimeoutSec: 1800}
+	}
+	wait := func(id string) lifecycle.BuildStatus {
+		t.Helper()
+		for start := time.Now(); time.Since(start) < 25*time.Minute; time.Sleep(3 * time.Second) {
+			st, err := h.BuildStatus(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.State != "running" {
+				return st
+			}
+		}
+		t.Fatalf("build %s did not finish", id)
+		return lifecycle.BuildStatus{}
+	}
+
+	good := "it-good-" + hex.EncodeToString(suffix)
+	started := time.Now()
+	if err := h.StartBuild(ctx, spec(good, profiles.Spec{Packages: []string{"jq"}})); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.StartBuild(ctx, spec("it-other-"+hex.EncodeToString(suffix), profiles.Spec{Packages: []string{"fd"}})); err == nil || !strings.Contains(err.Error(), "another build") {
+		t.Fatalf("second concurrent build: err = %v", err)
+	}
+	st := wait(good)
+	t.Logf("cold build of a small profile: %s", time.Since(started).Round(time.Second))
+	if st.State != "ready" || !strings.HasPrefix(st.HomePath, "/nix/store/") || st.ClosureMiB == 0 {
+		t.Fatalf("good build = %+v", st)
+	}
+	if label, err := run(ctx, "blkid", "-o", "value", "-s", "LABEL", h.profilePath(good)); err != nil || strings.TrimSpace(string(label)) != "boxface-profile" {
+		t.Fatalf("published drive label = %q, %v", label, err)
+	}
+	if err := h.StartBuild(ctx, spec(good, profiles.Spec{Packages: []string{"jq"}})); err != nil {
+		t.Fatalf("restarting a finished build: %v", err)
+	}
+	if again, _ := h.BuildStatus(ctx, good); again.State != "ready" {
+		t.Fatalf("status after restart = %+v", again)
+	}
+
+	broken := "it-broken-" + hex.EncodeToString(suffix)
+	if err := h.StartBuild(ctx, spec(broken, profiles.Spec{Module: "{ pkgs, ... }: { home.packages = [ pkgs.jq "})); err != nil {
+		t.Fatal(err)
+	}
+	if st := wait(broken); st.State != "failed" || st.Error != "nix build failed" || !strings.Contains(st.LogTail, "syntax error") {
+		t.Fatalf("broken module = %+v", st)
+	}
+	if _, err := os.Stat(h.profilePath(broken)); err == nil {
+		t.Fatal("a failed build published a drive")
+	}
+
+	a, _ := h.buildAddressing()
+	probe := "probe-" + hex.EncodeToString(suffix)
+	module := fmt.Sprintf("{ pkgs, ... }: { home.packages = [ (pkgs.runCommand \"probe\" { } \"${pkgs.curl}/bin/curl --connect-timeout 10 -sS http://%s:22/ -o $out\") ]; }", a.Host)
+	if err := h.StartBuild(ctx, spec(probe, profiles.Spec{Module: module})); err != nil {
+		t.Fatal(err)
+	}
+	if st := wait(probe); st.State != "failed" || !strings.Contains(st.LogTail, "Connection timed out") {
+		var lines []string
+		for _, l := range strings.Split(st.LogTail, "\n") {
+			if strings.Contains(l, "curl") || strings.Contains(l, "probe") {
+				lines = append(lines, l)
+			}
+		}
+		t.Fatalf("the build's connection to host SSH was not dropped: %s: %s", st.Error, strings.Join(lines, "\n"))
 	}
 }

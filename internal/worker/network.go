@@ -28,8 +28,7 @@ func tapName(environmentID string) string {
 }
 
 func (h *Host) addressing(index int) (addressing, error) {
-	slots := 1 << (32 - h.cfg.Pool.Bits() - 2)
-	if index < 0 || index >= slots {
+	if index < 0 || index >= h.slots() {
 		return addressing{}, fmt.Errorf("address index %d outside pool %s", index, h.cfg.Pool)
 	}
 	base := h.cfg.Pool.Masked().Addr().As4()
@@ -40,6 +39,10 @@ func (h *Host) addressing(index int) (addressing, error) {
 	}
 	return addressing{Index: index, Host: addr(n + 1), Guest: addr(n + 2)}, nil
 }
+
+func (h *Host) slots() int { return 1 << (32 - h.cfg.Pool.Bits() - 2) }
+
+func (h *Host) buildAddressing() (addressing, error) { return h.addressing(h.slots() - 1) }
 
 func (h *Host) readAddressing(environmentID string) (addressing, error) {
 	b, err := os.ReadFile(filepath.Join(h.envDir(environmentID), "network"))
@@ -76,9 +79,12 @@ func (h *Host) allocate(environmentID string) (addressing, error) {
 	for used[index] {
 		index++
 	}
+	if index >= h.slots()-1 {
+		return addressing{}, fmt.Errorf("network pool %s exhausted", h.cfg.Pool)
+	}
 	a, err := h.addressing(index)
 	if err != nil {
-		return addressing{}, fmt.Errorf("network pool exhausted: %w", err)
+		return addressing{}, err
 	}
 
 	dir := h.envDir(environmentID)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -212,6 +213,13 @@ func (r *recordingBackend) SetCredentials(_ context.Context, id string, creds li
 }
 func (r *recordingBackend) HostKey(_ context.Context, id string) (string, error) {
 	return "ssh-ed25519 AAAA", r.record("HostKey " + id)
+}
+
+func (r *recordingBackend) StartBuild(_ context.Context, s lifecycle.BuildSpec) error {
+	return r.record("StartBuild " + s.BuildID)
+}
+func (r *recordingBackend) BuildStatus(_ context.Context, id string) (lifecycle.BuildStatus, error) {
+	return lifecycle.BuildStatus{State: "running"}, r.record("BuildStatus " + id)
 }
 
 func serve(t *testing.T, b Backend) *Client {
@@ -425,5 +433,79 @@ func TestBrokerNoWait(t *testing.T) {
 	}
 	if !strings.Contains(r.Error, "not loaded") || time.Since(started) > time.Second {
 		t.Fatalf("nowait = %+v after %s", r, time.Since(started))
+	}
+}
+
+func TestValidateBuild(t *testing.T) {
+	good := lifecycle.BuildSpec{BuildID: "0123abcd", OwnerID: "owner-1", Files: map[string]string{"flake.nix": "{}", "flake.lock": "{}"}, VCPUs: 2, MemoryMiB: 2048, TimeoutSec: 3600}
+	if err := validateBuild(good); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*lifecycle.BuildSpec){
+		"path in build ID":  func(s *lifecycle.BuildSpec) { s.BuildID = "../x" },
+		"path in owner":     func(s *lifecycle.BuildSpec) { s.OwnerID = "a/b" },
+		"no flake.lock":     func(s *lifecycle.BuildSpec) { delete(s.Files, "flake.lock") },
+		"unexpected file":   func(s *lifecycle.BuildSpec) { s.Files["../../etc/passwd"] = "x" },
+		"too little memory": func(s *lifecycle.BuildSpec) { s.MemoryMiB = 256 },
+		"no timeout":        func(s *lifecycle.BuildSpec) { s.TimeoutSec = 0 },
+		"multi-line ref":    func(s *lifecycle.BuildSpec) { s.DotfilesRef = "main\nmalicious" },
+		"multi-line repo":   func(s *lifecycle.BuildSpec) { s.DotfilesRepo = "https://a\nb" },
+		"no vCPUs":          func(s *lifecycle.BuildSpec) { s.VCPUs = 0 },
+		"excessive timeout": func(s *lifecycle.BuildSpec) { s.TimeoutSec = buildTimeoutMax + 1 },
+		"excessive memory":  func(s *lifecycle.BuildSpec) { s.MemoryMiB = buildMemoryMax + 1 },
+		"empty build ID":    func(s *lifecycle.BuildSpec) { s.BuildID = "" },
+		"empty flake.nix":   func(s *lifecycle.BuildSpec) { s.Files["flake.nix"] = "" },
+	} {
+		s := good
+		s.Files = maps.Clone(good.Files)
+		mutate(&s)
+		if err := validateBuild(s); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}
+
+func TestCollectBuildResult(t *testing.T) {
+	h := testHost(t)
+	write := func(id, content string) {
+		os.MkdirAll(h.buildDir(id), 0o755)
+		b := make([]byte, resultSize)
+		copy(b, content)
+		os.WriteFile(filepath.Join(h.buildDir(id), "result.img"), b, 0o644)
+	}
+	write("failed", `{"status":"failed","error":"nix build failed","dotfiles_commit":"abc"}`+"\nerror: undefined variable 'ripgrepp'\n")
+	if st := h.collect(context.Background(), "failed"); st.State != "failed" || st.Error != "nix build failed" || !strings.Contains(st.LogTail, "ripgrepp") || st.DotfilesCommit != "abc" {
+		t.Fatalf("failed build = %+v", st)
+	}
+	write("empty", "")
+	if st := h.collect(context.Background(), "empty"); st.State != "failed" || !strings.Contains(st.Error, "without a result") {
+		t.Fatalf("no result = %+v", st)
+	}
+	write("lying", `{"status":"ok","home_path":"/nix/store/x","closure_mib":10}`+"\n")
+	if st := h.collect(context.Background(), "lying"); st.State != "failed" || !strings.Contains(st.Error, "not valid") {
+		t.Fatalf("success without a valid drive = %+v", st)
+	}
+	if _, err := os.Stat(h.profilePath("lying")); err == nil {
+		t.Fatal("published a drive the builder did not produce")
+	}
+	long := strings.Repeat("line\n", 500)
+	write("long", `{"status":"failed"}`+"\n"+long)
+	if st := h.collect(context.Background(), "long"); strings.Count(st.LogTail, "\n") != buildLogLines-1 || st.Error != "the build failed" {
+		t.Fatalf("long log = %d lines, error %q", strings.Count(st.LogTail, "\n")+1, st.Error)
+	}
+}
+
+func TestClientBuilds(t *testing.T) {
+	b := &recordingBackend{}
+	c := serve(t, b)
+	ctx := context.Background()
+	if err := c.StartBuild(ctx, lifecycle.BuildSpec{BuildID: "key-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := c.BuildStatus(ctx, "key-1"); err != nil || st.State != "running" {
+		t.Fatalf("status = %+v, %v", st, err)
+	}
+	if got := strings.Join(b.calls, ","); got != "StartBuild key-1,BuildStatus key-1" {
+		t.Fatalf("calls = %s", got)
 	}
 }

@@ -32,6 +32,7 @@ func main() {
 	pool := flag.String("pool", "172.20.0.0/16", "IPv4 pool for per-environment /30 networks")
 	readyTimeout := flag.Duration("ready-timeout", 2*time.Minute, "how long to wait for guest readiness")
 	stopTimeout := flag.Duration("stop-timeout", 30*time.Second, "how long to wait for a clean guest shutdown")
+	builderImage := flag.String("builder-image", "/var/lib/boxface/builder", "directory holding the profile builder's vmlinux and rootfs.ext4")
 	flag.Parse()
 
 	if *showVersion {
@@ -46,6 +47,7 @@ func main() {
 		Pool:         netip.MustParsePrefix(*pool),
 		ReadyTimeout: *readyTimeout,
 		StopTimeout:  *stopTimeout,
+		BuilderImage: *builderImage,
 	}); err != nil {
 		slog.Error("boxface-worker", "error", err)
 		os.Exit(1)

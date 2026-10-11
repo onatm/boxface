@@ -75,6 +75,10 @@ func serve(args []string) error {
 	importDir := fs.String("import-dir", "/var/lib/boxface/import", "directory the owner stages images in")
 	imagesDir := fs.String("images-dir", "/var/lib/boxface/images", "directory holding image artifact sets")
 	reconcileInterval := fs.Duration("reconcile-interval", 30*time.Second, "how often to compare environment state with the worker")
+	var limits profiles.Limits
+	fs.IntVar(&limits.VCPUs, "build-vcpus", 2, "vCPUs for a profile build VM")
+	fs.IntVar(&limits.MemoryMiB, "build-memory-mib", 2048, "memory for a profile build VM")
+	buildTimeout := fs.Duration("build-timeout", time.Hour, "time limit for one profile build")
 	var capacity lifecycle.Capacity
 	fs.IntVar(&capacity.Environments, "max-environments", 4, "maximum environments; 0 means unlimited")
 	fs.IntVar(&capacity.VCPUs, "max-vcpus", 0, "maximum vCPUs across environments; 0 means unlimited")
@@ -100,6 +104,9 @@ func serve(args []string) error {
 	authStore := auth.New(db)
 	secretStore := secrets.NewStore(db, keeper)
 	pusher := secrets.NewPusher(db, secretStore, client, authStore)
+	limits.TimeoutSec = int(buildTimeout.Seconds())
+	builder := profiles.NewBuilder(db, client, limits)
+	go builder.Run(ctx)
 	runner.Started = func(ctx context.Context, environmentID string) {
 		if err := pusher.Push(ctx, environmentID); err != nil {
 			slog.Warn("credential push after start failed; reconcile will retry", "environment", environmentID, "error", err)
@@ -112,6 +119,7 @@ func serve(args []string) error {
 		SSHKeys:      sshkeys.NewStore(db),
 		Secrets:      secretStore,
 		Profiles:     profiles.NewStore(db),
+		Builds:       builder,
 		Credentials:  pusher,
 		Gateway:      client,
 		Capacity:     capacity,

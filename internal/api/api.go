@@ -31,6 +31,7 @@ type Server struct {
 	SSHKeys     *sshkeys.Store
 	Secrets     *secrets.Store
 	Profiles    *profiles.Store
+	Builds      interface{ Kick() }
 	Credentials interface {
 		PushOwner(ctx context.Context, ownerID string)
 	}
@@ -388,6 +389,7 @@ func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditProfile(r, "profile.create", p.Name)
+	s.kickBuilds()
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -414,7 +416,14 @@ func (s *Server) reviseProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auditProfile(r, "profile.revise", r.PathValue("id"))
+	s.kickBuilds()
 	writeJSON(w, http.StatusCreated, rev)
+}
+
+func (s *Server) kickBuilds() {
+	if s.Builds != nil {
+		s.Builds.Kick()
+	}
 }
 
 func (s *Server) auditProfile(r *http.Request, action, target string) {

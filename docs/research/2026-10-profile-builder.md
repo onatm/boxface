@@ -71,3 +71,23 @@ The profile builds inside a builder VM that runs a static Nix as root, so the VM
 - The builder reports its result over vsock and the worker treats a VM exit without a result as a failure; console output is the log.
 - The base image needs `/nix`, an `fstab` entry for `/dev/vdd`, `/opt/boxface/profile -> /nix/profile`, and `/usr/share/boxface -> /nix/boxface`; nothing else in the guest changes.
 - Packing time is the target for build speed: reuse unchanged store paths from the previous drive, or move to EROFS.
+
+## Builder in the Product (P3)
+
+**Date:** 2026-10-11. **Result:** Pass on the droplet with `boxface-api` and `boxface-worker` from this change and the builder image from `experiments/profile-builder/01-images.sh` (516 MiB with `git` added).
+
+| Check | Result |
+|---|---|
+| Worker integration test: small picker profile (`jq` plus the required tools), cold per-owner cache | Ready in 1 min 22–35 s; drive published with the `boxface-profile` label |
+| A second build while one runs | Refused with "another build is running" |
+| Restarting a finished build | No-op; status stays `ready` |
+| A module with a syntax error | `failed`, "nix build failed", the Nix syntax error in the log tail, nothing published |
+| A build step that connects to the host's SSH port | `failed` with `curl: (28) Connection timed out`: the worker's rules drop builder traffic to the host |
+| Through the API: owner's `main` profile with the four agents, mise, Node, Rust, gcc, ripgrep, jq; cold cache | `pending` → `building` → `ready` in 217 s |
+| Same packages in another order as a new revision | `ready` within 3 s with no builder VM (same build key) |
+
+**Findings:**
+
+1. **Flakes are evaluated in pure mode,** so `builtins.fetchurl` without a hash is refused before any connection is attempted; network access from user code happens only in build steps, which the firewall confines to the internet.
+2. **Published drives were writable by `boxface-vm`,** the user every VMM runs as, so a compromised VMM could have modified another environment's profile; the worker now publishes them owned by root.
+3. **Step headings in the log read as errors.** The builder's log marked each step with its failure message; it now logs what it is doing and keeps the failure message for the result only.

@@ -29,6 +29,7 @@ type Config struct {
 	ReadyTimeout   time.Duration
 	StopTimeout    time.Duration
 	CredentialWait time.Duration
+	BuilderImage   string
 }
 
 type Host struct {
@@ -38,6 +39,7 @@ type Host struct {
 	mu        sync.Mutex
 	listeners map[string][]net.Listener
 	broker    *broker
+	buildMu   sync.Mutex
 }
 
 func New(ctx context.Context, cfg Config) (*Host, error) {
@@ -52,7 +54,7 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	gid, _ := strconv.Atoi(u.Gid)
 	h := &Host{cfg: cfg, vmUID: uid, vmGID: gid, listeners: map[string][]net.Listener{}, broker: newBroker(cmp.Or(cfg.CredentialWait, 35*time.Second))}
 
-	for _, dir := range []string{h.environmentsDir(), h.disksDir(), h.profilesDir()} {
+	for _, dir := range []string{h.environmentsDir(), h.disksDir(), h.profilesDir(), h.buildsDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}

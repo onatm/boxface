@@ -16,8 +16,8 @@ memory_mib="${MEMORY_MIB:-3072}"
 
 inputs="$work/inputs"
 rm -rf "$inputs"
-mkdir -p "$inputs/profile"
-cp "$flake/flake.nix" "$flake/flake.lock" "$inputs/profile/"
+mkdir -p "$inputs/flake"
+cp "$flake/flake.nix" "$flake/flake.lock" "$inputs/flake/"
 cp -a "$dotfiles" "$inputs/dotfiles"
 (cd "$dotfiles" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1) > "$inputs/dotfiles-revision"
 rm -f "$work/inputs.ext4"
@@ -25,8 +25,9 @@ truncate -s 64M "$work/inputs.ext4"
 mkfs.ext4 -q -L boxface-inputs -d "$inputs" "$work/inputs.ext4"
 
 [ -f "$work/cache.img" ] || truncate -s 40G "$work/cache.img"
-rm -f "$out/profile.img"
+rm -f "$out/profile.img" "$work/result.img"
 truncate -s 16G "$out/profile.img"
+truncate -s 64K "$work/result.img"
 
 ip link show "$tap" > /dev/null 2>&1 || ip tuntap add dev "$tap" mode tap
 ip addr replace 172.20.250.1/30 dev "$tap"
@@ -44,7 +45,8 @@ cat > "$work/builder.json" <<JSON
     {"drive_id": "rootfs", "path_on_host": "$out/builder.ext4", "is_root_device": true, "is_read_only": true},
     {"drive_id": "cache", "path_on_host": "$work/cache.img", "is_root_device": false, "is_read_only": false},
     {"drive_id": "inputs", "path_on_host": "$work/inputs.ext4", "is_root_device": false, "is_read_only": true},
-    {"drive_id": "output", "path_on_host": "$out/profile.img", "is_root_device": false, "is_read_only": false}
+    {"drive_id": "output", "path_on_host": "$out/profile.img", "is_root_device": false, "is_read_only": false},
+    {"drive_id": "result", "path_on_host": "$work/result.img", "is_root_device": false, "is_read_only": false}
   ],
   "machine-config": {"vcpu_count": 2, "mem_size_mib": $memory_mib},
   "network-interfaces": [{"iface_id": "eth0", "guest_mac": "06:00:ac:14:fa:02", "host_dev_name": "$tap"}]
