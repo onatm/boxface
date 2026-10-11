@@ -20,18 +20,23 @@ import (
 	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
+	"github.com/onatm/boxface/internal/worker"
 )
 
 const maxBody = 1 << 20
 
 type Server struct {
-	Auth        *auth.Store
-	Lifecycle   *lifecycle.Service
-	Images      *images.Registry
-	SSHKeys     *sshkeys.Store
-	Secrets     *secrets.Store
-	Profiles    *profiles.Store
-	Builds      interface{ Kick() }
+	Auth      *auth.Store
+	Lifecycle *lifecycle.Service
+	Images    *images.Registry
+	SSHKeys   *sshkeys.Store
+	Secrets   *secrets.Store
+	Profiles  *profiles.Store
+	Builds    interface{ Kick() }
+	Storage   interface {
+		Storage(ctx context.Context) (worker.Storage, error)
+		RemoveBuildCache(ctx context.Context, ownerID string) error
+	}
 	Credentials interface {
 		PushOwner(ctx context.Context, ownerID string)
 	}
@@ -89,6 +94,10 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/ssh-keys", s.listSSHKeys)
 	authed("POST /v1/ssh-keys", s.addSSHKey)
 	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
+	authed("DELETE /v1/images/{id}", s.removeImage)
+	authed("DELETE /v1/profiles/{id}", s.deleteProfile)
+	authed("GET /v1/storage", s.storage)
+	authed("DELETE /v1/storage/build-cache", s.clearBuildCache)
 	authed("GET /v1/profiles", s.listProfiles)
 	authed("POST /v1/profiles", s.createProfile)
 	authed("GET /v1/profiles/{id}", s.getProfile)
@@ -388,7 +397,7 @@ func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.auditProfile(r, "profile.create", p.Name)
+	s.auditEvent(r, "profile.create", "profile:"+p.Name)
 	s.kickBuilds()
 	writeJSON(w, http.StatusCreated, p)
 }
@@ -415,9 +424,52 @@ func (s *Server) reviseProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.auditProfile(r, "profile.revise", r.PathValue("id"))
+	s.auditEvent(r, "profile.revise", "profile:"+r.PathValue("id"))
 	s.kickBuilds()
 	writeJSON(w, http.StatusCreated, rev)
+}
+
+func (s *Server) removeImage(w http.ResponseWriter, r *http.Request) {
+	if err := s.Images.Remove(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "image.remove", "image:"+r.PathValue("id"))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	name, err := s.Profiles.Delete(r.Context(), owner(r), r.PathValue("id"), d.Profile)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "profile.delete", "profile:"+name)
+	s.kickBuilds()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Storage.Storage(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) clearBuildCache(w http.ResponseWriter, r *http.Request) {
+	if err := s.Storage.RemoveBuildCache(r.Context(), owner(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "build-cache.clear", "owner:"+owner(r))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) kickBuilds() {
@@ -426,9 +478,9 @@ func (s *Server) kickBuilds() {
 	}
 }
 
-func (s *Server) auditProfile(r *http.Request, action, target string) {
-	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), "profile:"+target, clientAddr(r)); err != nil {
-		slog.Error("record profile audit event", "action", action, "error", err)
+func (s *Server) auditEvent(r *http.Request, action, target string) {
+	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), target, clientAddr(r)); err != nil {
+		slog.Error("record audit event", "action", action, "error", err)
 	}
 }
 
@@ -545,6 +597,9 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	acc, err := s.Lifecycle.Delete(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), r.PathValue("id"), purge)
+	if err == nil {
+		s.kickBuilds()
+	}
 	writeAccepted(w, acc, err)
 }
 
@@ -649,6 +704,8 @@ func writeError(w http.ResponseWriter, err error) {
 		{profiles.ErrNotFound, http.StatusNotFound, "not_found"},
 		{profiles.ErrNameTaken, http.StatusConflict, "name_taken"},
 		{profiles.ErrNotReady, http.StatusConflict, "profile_not_ready"},
+		{profiles.ErrInUse, http.StatusConflict, "in_use"},
+		{images.ErrInUse, http.StatusConflict, "in_use"},
 		{secrets.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{secrets.ErrNotFound, http.StatusNotFound, "not_found"},
 		{secrets.ErrConflict, http.StatusConflict, "conflict"},

@@ -100,6 +100,7 @@ Confirmed by the owner on 2026-10-10.
 | P3. Builder *(done)* | Worker builder RPC and VM lifecycle, per-owner cache disks, durable `profile.build` operation with steps, limits, log tail, atomic publication | Integration test on the droplet: a picker profile builds and publishes; a broken module fails with its Nix error in the log tail and publishes nothing; a timeout kills the VM; the builder cannot reach the host, the LAN, or the tailnet |
 | P4. Environments *(done)* | Profile defaults and aliases, `create --profile`, profile drive in `VMSpec`, environment records | `create` uses the default profile; moving `main` leaves existing environments on their revision |
 | P5. Web UI *(done)* | Profiles page with picker, raw editor, build progress, and log tail | Builds start and report from the browser; cross-origin rules as elsewhere |
+| P5b. Disk cleanup *(done)* | Added after P4 filled the droplet's disk: image removal, profile deletion, automatic pruning of unused profile drives, build cache clearing, a storage report on the Images page, and free-space guards in the worker | Tests: in-use images and profiles are refused with the users named; pruning keeps latest, in-use, and recent drives and a pruned spec rebuilds; drive listing ignores temporary files; allocated space counts blocks, not sparse sizes. On the droplet: an unused 5.4 GiB image removed (free space 7.8 → 13.1 GiB), an in-use one refused naming its environment |
 | P6. Acceptance | Scenarios below on the droplet | Results in `docs/research/` |
 
 ## Acceptance Scenarios

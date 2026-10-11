@@ -23,6 +23,10 @@ type Backend interface {
 	HostKey(ctx context.Context, diskID string) (string, error)
 	SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error
 	StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error
+	Storage(ctx context.Context) (Storage, error)
+	ProfileDrives(ctx context.Context) ([]string, error)
+	RemoveProfileDrive(ctx context.Context, key string) error
+	RemoveBuildCache(ctx context.Context, ownerID string) error
 	BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error)
 }
 
@@ -111,6 +115,10 @@ func NewHandler(b Backend) http.Handler {
 	}
 	get("GET /v1/inventory", func(r *http.Request) (any, error) { return b.Inventory(r.Context()) })
 	get("GET /v1/builds/{id}", func(r *http.Request) (any, error) { return b.BuildStatus(r.Context(), r.PathValue("id")) })
+	get("GET /v1/storage", func(r *http.Request) (any, error) { return b.Storage(r.Context()) })
+	get("GET /v1/profile-drives", func(r *http.Request) (any, error) { return b.ProfileDrives(r.Context()) })
+	handle("DELETE /v1/profile-drives/{key}", func(r *http.Request) error { return b.RemoveProfileDrive(r.Context(), r.PathValue("key")) })
+	handle("DELETE /v1/build-caches/{owner}", func(r *http.Request) error { return b.RemoveBuildCache(r.Context(), r.PathValue("owner")) })
 	get("GET /v1/environments/{id}/endpoint", func(r *http.Request) (any, error) {
 		addr, err := b.Endpoint(r.Context(), r.PathValue("id"))
 		return endpointResponse{addr}, err
@@ -256,6 +264,26 @@ func (c *Client) BuildStatus(ctx context.Context, buildID string) (lifecycle.Bui
 	var st lifecycle.BuildStatus
 	err := c.do(ctx, http.MethodGet, "/v1/builds/"+url.PathEscape(buildID), nil, &st)
 	return st, err
+}
+
+func (c *Client) Storage(ctx context.Context) (Storage, error) {
+	var st Storage
+	err := c.do(ctx, http.MethodGet, "/v1/storage", nil, &st)
+	return st, err
+}
+
+func (c *Client) ProfileDrives(ctx context.Context) ([]string, error) {
+	var keys []string
+	err := c.do(ctx, http.MethodGet, "/v1/profile-drives", nil, &keys)
+	return keys, err
+}
+
+func (c *Client) RemoveProfileDrive(ctx context.Context, key string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/profile-drives/"+url.PathEscape(key), nil, nil)
+}
+
+func (c *Client) RemoveBuildCache(ctx context.Context, ownerID string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/build-caches/"+url.PathEscape(ownerID), nil, nil)
 }
 
 func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {

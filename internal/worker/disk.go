@@ -22,6 +22,9 @@ func (h *Host) CreateDisk(ctx context.Context, spec lifecycle.DiskSpec) error {
 	if ok, err := exists(path); err != nil || ok {
 		return err
 	}
+	if err := h.requireFree(minFreeForDisk, "create a data disk"); err != nil {
+		return err
+	}
 
 	seed, err := os.MkdirTemp("", "boxface-seed-")
 	if err != nil {

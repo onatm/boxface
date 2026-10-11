@@ -25,6 +25,7 @@ import (
 	"github.com/onatm/boxface/internal/secrets"
 	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
+	"github.com/onatm/boxface/internal/worker"
 )
 
 var testKeys = map[string]string{
@@ -49,6 +50,16 @@ func (fakeGateway) Endpoint(_ context.Context, id string) (netip.Addr, error) {
 }
 func (fakeGateway) HostKey(_ context.Context, diskID string) (string, error) {
 	return "ssh-ed25519 AAAAhost", nil
+}
+
+type fakeStorage struct{ cleared []string }
+
+func (f *fakeStorage) Storage(context.Context) (worker.Storage, error) {
+	return worker.Storage{TotalBytes: 80 << 30, FreeBytes: 20 << 30, ImagesBytes: 5 << 30}, nil
+}
+func (f *fakeStorage) RemoveBuildCache(_ context.Context, owner string) error {
+	f.cleared = append(f.cleared, owner)
+	return nil
 }
 
 type pushRecorder struct {
@@ -102,6 +113,7 @@ func setup(t *testing.T, capacity lifecycle.Capacity) *env {
 		Secrets:      secrets.NewStore(db, keeper),
 		Profiles:     profiles.NewStore(db),
 		Credentials:  pushes,
+		Storage:      &fakeStorage{},
 		Gateway:      fakeGateway{},
 		Capacity:     capacity,
 		PollInterval: 10 * time.Millisecond,
@@ -900,4 +912,55 @@ func TestProfileRoutes(t *testing.T) {
 	if len(list.Profiles) != 0 {
 		t.Fatalf("owner two sees %+v", list.Profiles)
 	}
+}
+
+func TestCleanupRoutes(t *testing.T) {
+	e := setup(t, lifecycle.Capacity{})
+	e.do("one", http.MethodPut, "/v1/image-aliases/main", map[string]string{"image_id": e.imageID}, http.StatusOK, nil)
+	if code := e.errorCode("one", http.MethodDelete, "/v1/images/"+e.imageID, nil, http.StatusConflict); code != "in_use" {
+		t.Fatalf("remove aliased image: code = %s", code)
+	}
+	e.stage("spare")
+	var spare images.Image
+	e.do("one", http.MethodPost, "/v1/images", map[string]string{"source": "spare"}, http.StatusCreated, &spare)
+	var acc lifecycle.Accepted
+	e.do("one", http.MethodPost, "/v1/environments", lifecycle.CreateRequest{Name: "user", ImageID: spare.ID, VCPUs: 1, MemoryMiB: 512, DiskGiB: 2}, http.StatusAccepted, &acc)
+	e.runner.Wait()
+	if code := e.errorCode("one", http.MethodDelete, "/v1/images/"+spare.ID, nil, http.StatusConflict); code != "in_use" {
+		t.Fatalf("remove image in use: code = %s", code)
+	}
+	e.do("one", http.MethodDelete, "/v1/environments/"+acc.EnvironmentID, nil, http.StatusAccepted, nil)
+	e.runner.Wait()
+	e.do("one", http.MethodDelete, "/v1/images/"+spare.ID, nil, http.StatusNoContent, nil)
+	var list struct {
+		Images []images.Image `json:"images"`
+	}
+	e.do("one", http.MethodGet, "/v1/images", nil, http.StatusOK, &list)
+	if len(list.Images) != 1 {
+		t.Fatalf("removed image still listed: %+v", list.Images)
+	}
+	e.errorCode("one", http.MethodPost, "/v1/environments", lifecycle.CreateRequest{Name: "x", ImageID: spare.ID, VCPUs: 1, MemoryMiB: 512, DiskGiB: 2}, http.StatusNotFound)
+	e.errorCode("one", http.MethodDelete, "/v1/images/"+spare.ID, nil, http.StatusNotFound)
+	e.stage("spare")
+	var restored images.Image
+	e.do("one", http.MethodPost, "/v1/images", map[string]string{"source": "spare"}, http.StatusCreated, &restored)
+	if restored.ID != spare.ID {
+		t.Fatalf("re-import created %s instead of restoring %s", restored.ID, spare.ID)
+	}
+
+	var p profiles.Profile
+	e.do("one", http.MethodPost, "/v1/profiles", map[string]any{"name": "main", "spec": map[string]any{}}, http.StatusCreated, &p)
+	if code := e.errorCode("one", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusConflict); code != "in_use" {
+		t.Fatalf("delete default profile: code = %s", code)
+	}
+	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", Profile: "other", VCPUs: 1, MemoryMiB: 512, DiskGiB: 2}, http.StatusOK, nil)
+	e.errorCode("two", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusNotFound)
+	e.do("one", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusNoContent, nil)
+
+	var st worker.Storage
+	e.do("one", http.MethodGet, "/v1/storage", nil, http.StatusOK, &st)
+	if st.FreeBytes != 20<<30 {
+		t.Fatalf("storage = %+v", st)
+	}
+	e.do("one", http.MethodDelete, "/v1/storage/build-cache", nil, http.StatusNoContent, nil)
 }

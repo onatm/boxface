@@ -222,6 +222,19 @@ func (r *recordingBackend) BuildStatus(_ context.Context, id string) (lifecycle.
 	return lifecycle.BuildStatus{State: "running"}, r.record("BuildStatus " + id)
 }
 
+func (r *recordingBackend) Storage(context.Context) (Storage, error) {
+	return Storage{FreeBytes: 5 << 30}, r.record("Storage")
+}
+func (r *recordingBackend) ProfileDrives(context.Context) ([]string, error) {
+	return []string{"key-a"}, r.record("ProfileDrives")
+}
+func (r *recordingBackend) RemoveProfileDrive(_ context.Context, key string) error {
+	return r.record("RemoveProfileDrive " + key)
+}
+func (r *recordingBackend) RemoveBuildCache(_ context.Context, owner string) error {
+	return r.record("RemoveBuildCache " + owner)
+}
+
 func serve(t *testing.T, b Backend) *Client {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "bfx")
@@ -506,6 +519,56 @@ func TestClientBuilds(t *testing.T) {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 	if got := strings.Join(b.calls, ","); got != "StartBuild key-1,BuildStatus key-1" {
+		t.Fatalf("calls = %s", got)
+	}
+}
+
+func TestStorageAndProfileDrives(t *testing.T) {
+	h := testHost(t)
+	os.MkdirAll(h.profilesDir(), 0o755)
+	if err := sparseFile(h.profilePath("key-a"), 1<<30); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(h.profilePath("key-b"), make([]byte, 1<<20), 0o644)
+	os.WriteFile(h.profilePath("key-c")+".tmp", []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(h.profilesDir(), "notes.txt"), []byte("x"), 0o644)
+	if got := allocated(h.profilesDir()); got < 1<<20 || got > 4<<20 {
+		t.Fatalf("allocated = %d; a sparse 1 GiB file must not count its size", got)
+	}
+	keys, err := h.ProfileDrives(context.Background())
+	if err != nil || strings.Join(keys, ",") != "key-a,key-b" {
+		t.Fatalf("drives = %v, %v", keys, err)
+	}
+	if err := h.RemoveProfileDrive(context.Background(), "key-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.RemoveProfileDrive(context.Background(), "../escape"); err == nil {
+		t.Fatal("removed a drive named with a path")
+	}
+	if keys, _ := h.ProfileDrives(context.Background()); strings.Join(keys, ",") != "key-b" {
+		t.Fatalf("after remove = %v", keys)
+	}
+	st, err := h.Storage(context.Background())
+	if err != nil || st.TotalBytes == 0 || st.FreeBytes == 0 || st.ProfileDrivesBytes < 1<<20 {
+		t.Fatalf("storage = %+v, %v", st, err)
+	}
+	if err := h.requireFree(st.TotalBytes+1, "test"); err == nil || !strings.Contains(err.Error(), "not enough free disk space") {
+		t.Fatalf("requireFree = %v", err)
+	}
+}
+
+func TestClientStorage(t *testing.T) {
+	b := &recordingBackend{}
+	c := serve(t, b)
+	ctx := context.Background()
+	st, err := c.Storage(ctx)
+	keys, err2 := c.ProfileDrives(ctx)
+	err3 := c.RemoveProfileDrive(ctx, "key-a")
+	err4 := c.RemoveBuildCache(ctx, "owner-1")
+	if err != nil || err2 != nil || err3 != nil || err4 != nil || st.FreeBytes != 5<<30 || len(keys) != 1 {
+		t.Fatalf("storage %+v %v, drives %v %v, remove %v, cache %v", st, err, keys, err2, err3, err4)
+	}
+	if got := strings.Join(b.calls, ","); got != "Storage,ProfileDrives,RemoveProfileDrive key-a,RemoveBuildCache owner-1" {
 		t.Fatalf("calls = %s", got)
 	}
 }

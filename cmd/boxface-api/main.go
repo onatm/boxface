@@ -120,6 +120,7 @@ func serve(args []string) error {
 		Secrets:      secretStore,
 		Profiles:     profiles.NewStore(db),
 		Builds:       builder,
+		Storage:      client,
 		Credentials:  pusher,
 		Gateway:      client,
 		Capacity:     capacity,

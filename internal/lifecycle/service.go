@@ -171,8 +171,8 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, re
 
 func resolveImage(ctx context.Context, q queryer, ref string) (string, error) {
 	var imageID, status string
-	err := q.QueryRowContext(ctx, `SELECT id, status FROM images WHERE id = ?
-		UNION ALL SELECT i.id, i.status FROM image_aliases a JOIN images i ON i.id = a.image_id WHERE a.name = ? LIMIT 1`, ref, ref).Scan(&imageID, &status)
+	err := q.QueryRowContext(ctx, `SELECT id, status FROM images WHERE id = ? AND removed_at IS NULL
+		UNION ALL SELECT i.id, i.status FROM image_aliases a JOIN images i ON i.id = a.image_id WHERE a.name = ? AND i.removed_at IS NULL LIMIT 1`, ref, ref).Scan(&imageID, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("%w: no image or image alias named %q", ErrNotFound, ref)
 	}
@@ -188,7 +188,7 @@ func resolveImage(ctx context.Context, q queryer, ref string) (string, error) {
 func resolveProfile(ctx context.Context, q queryer, ownerID, ref string, explicit bool) (any, error) {
 	var revisionID, state string
 	err := q.QueryRowContext(ctx, `SELECT r.id, r.state FROM profile_revisions r JOIN profiles p ON p.id = r.profile_id
-		WHERE p.owner_id = ? AND (p.id = ? OR p.name = ?) ORDER BY r.state = 'ready' DESC, r.number DESC LIMIT 1`, ownerID, ref, ref).Scan(&revisionID, &state)
+		WHERE p.owner_id = ? AND (p.id = ? OR p.name = ?) AND p.deleted_at IS NULL ORDER BY r.state = 'ready' DESC, r.number DESC LIMIT 1`, ownerID, ref, ref).Scan(&revisionID, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		if !explicit {
 			return nil, nil

@@ -78,6 +78,9 @@ func (h *Host) StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error {
 	} else if running != "" {
 		return fmt.Errorf("another build (%s) is running", running)
 	}
+	if err := h.requireFree(minFreeForBuild, "build a profile"); err != nil {
+		return err
+	}
 	for _, p := range []string{filepath.Join(h.cfg.BuilderImage, "vmlinux"), filepath.Join(h.cfg.BuilderImage, "rootfs.ext4")} {
 		if _, err := os.Stat(p); err != nil {
 			return fmt.Errorf("builder image: %w", err)

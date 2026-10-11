@@ -3,6 +3,7 @@ package profiles
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,18 @@ type fakeWorker struct {
 	started  []lifecycle.BuildSpec
 	status   map[string]lifecycle.BuildStatus
 	startErr error
+	drives   []string
+	removed  []string
+}
+
+func (f *fakeWorker) ProfileDrives(context.Context) ([]string, error) {
+	return slices.Clone(f.drives), nil
+}
+
+func (f *fakeWorker) RemoveProfileDrive(_ context.Context, key string) error {
+	f.removed = append(f.removed, key)
+	f.drives = slices.DeleteFunc(f.drives, func(k string) bool { return k == key })
+	return nil
 }
 
 func (f *fakeWorker) StartBuild(_ context.Context, spec lifecycle.BuildSpec) error {
@@ -107,5 +120,60 @@ func TestBuilder(t *testing.T) {
 	b.Step(ctx)
 	if r := revision(t, s, "owner-2", lost.ID); r.State != "building" || len(w.started) != 4 {
 		t.Fatalf("lost build was not restarted: %+v, %d builds", r, len(w.started))
+	}
+}
+
+func TestPruneAndDelete(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	w := &fakeWorker{status: map[string]lifecycle.BuildStatus{}}
+	b := NewBuilder(s.db, w, Limits{VCPUs: 2, MemoryMiB: 2048, TimeoutSec: 3600})
+	s.db.Exec(`INSERT INTO images (id, digest, status, created_at) VALUES ('img', 'sha256:x', 'ready', 'x')`)
+
+	main, _ := s.Create(ctx, "owner-1", "main", Spec{Packages: []string{"jq"}})
+	r2, _ := s.AddRevision(ctx, "owner-1", main.ID, Spec{Packages: []string{"jq", "fd"}})
+	r3, _ := s.AddRevision(ctx, "owner-1", main.ID, Spec{Packages: []string{"jq", "fd", "htop"}})
+	old := "2026-01-01T00:00:00Z"
+	s.db.Exec(`UPDATE profile_revisions SET state = 'ready', updated_at = ?`, old)
+	s.db.Exec(`INSERT INTO environments (id, owner_id, name, image_id, vcpus, memory_mib, desired_state, observed_state, created_at, updated_at, profile_revision_id)
+		VALUES ('env-old', 'owner-1', 'old', 'img', 1, 512, 'running', 'running', 'x', 'x', ?)`, r2.ID)
+	w.drives = []string{main.Latest.BuildKey, r2.BuildKey, r3.BuildKey, "orphan-key"}
+
+	if err := b.Prune(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(w.removed, ",") != main.Latest.BuildKey+",orphan-key" {
+		t.Fatalf("removed = %v; want revision 1 and the orphan, keeping 2 (in use) and 3 (latest)", w.removed)
+	}
+	got, _ := s.Get(ctx, "owner-1", main.ID)
+	if !got.Revisions[2].Pruned || got.Revisions[1].Pruned || got.Revisions[0].Pruned {
+		t.Fatalf("pruned flags = %v %v %v", got.Revisions[0].Pruned, got.Revisions[1].Pruned, got.Revisions[2].Pruned)
+	}
+
+	again, _ := s.AddRevision(ctx, "owner-1", main.ID, Spec{Packages: []string{"jq"}})
+	b.dirty = false
+	b.Step(ctx)
+	if r := revision(t, s, "owner-1", main.ID); r.Number != again.Number || r.State != "building" {
+		t.Fatalf("a spec whose drive was pruned must rebuild: %+v", r)
+	}
+
+	if _, err := s.Delete(ctx, "owner-1", main.ID, "main"); !errors.Is(err, ErrInUse) {
+		t.Fatalf("delete the default: err = %v", err)
+	}
+	if _, err := s.Delete(ctx, "owner-1", main.ID, "other"); !errors.Is(err, ErrInUse) || !strings.Contains(err.Error(), "old") {
+		t.Fatalf("delete while in use: err = %v", err)
+	}
+	s.db.Exec(`UPDATE environments SET observed_state = 'deleted', desired_state = 'deleted'`)
+	if _, err := s.Delete(ctx, "owner-2", main.ID, "other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete by another owner: err = %v", err)
+	}
+	if name, err := s.Delete(ctx, "owner-1", main.ID, "other"); err != nil || name != "main" {
+		t.Fatalf("delete = %q, %v", name, err)
+	}
+	if list, _ := s.List(ctx, "owner-1"); len(list) != 0 {
+		t.Fatalf("deleted profile listed: %+v", list)
+	}
+	if _, err := s.Create(ctx, "owner-1", "main", Spec{}); err != nil {
+		t.Fatalf("the name was not freed: %v", err)
 	}
 }

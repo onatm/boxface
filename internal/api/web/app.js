@@ -241,8 +241,28 @@ views.setup = async () => {
           h("p", { class: "hint" }, detail)))))));
 };
 
+function gib(bytes) {
+  return `${(bytes / 2 ** 30).toFixed(1)} GiB`;
+}
+
+function storageCard(st) {
+  const clear = h("button", { type: "button" }, "Clear build cache");
+  clear.addEventListener("click", busy(clear, "Clearing…", async () => {
+    if (!confirm("Clear your Nix build cache? The next profile build downloads everything again.")) return;
+    await api("DELETE", "/v1/storage/build-cache");
+    status("Build cache cleared.", "ok");
+    await views.images();
+  }));
+  const low = st.free_bytes < 10 * 2 ** 30;
+  return h("div", { class: "card" },
+    h("p", {}, h("strong", {}, `${gib(st.free_bytes)} free`), ` of ${gib(st.total_bytes)}`, low ? [" ", h("span", { class: "badge warn" }, "low: builds need 10 GiB")] : null),
+    h("p", { class: "hint" }, `Images ${gib(st.images_bytes)} · profile drives ${gib(st.profile_drives_bytes)} · build cache ${gib(st.build_caches_bytes)} · data disks ${gib(st.data_disks_bytes)}`),
+    h("p", { class: "hint" }, "Unused profile drives are removed automatically. Remove images nothing uses, or clear the build cache, to free more."),
+    clear);
+}
+
 views.images = async () => {
-  const [staged, images] = await Promise.all([api("GET", "/v1/image-imports"), api("GET", "/v1/images")]);
+  const [staged, images, storage] = await Promise.all([api("GET", "/v1/image-imports"), api("GET", "/v1/images"), api("GET", "/v1/storage")]);
   const stagedList = staged.staged.length === 0
     ? h("p", { class: "muted" }, "Nothing staged. Copy vmlinux and rootfs.ext4 into a directory under /var/lib/boxface/import/ on the host.")
     : h("div", { class: "table-wrap" }, h("table", {},
@@ -264,14 +284,25 @@ views.images = async () => {
       h("thead", {}, h("tr", {}, h("th", {}, "Image"), h("th", { class: "optional" }, "Digest"), h("th", {}, "Created"), h("th", {}, ""))),
       h("tbody", {}, images.images.map((img) => {
         const isMain = (img.aliases || []).includes("main");
-        let action = null;
+        const action = [];
         if (!isMain && img.status === "ready") {
-          action = h("button", { type: "button" }, "Make main");
-          action.addEventListener("click", busy(action, "Saving…", async () => {
+          const make = h("button", { type: "button" }, "Make main");
+          make.addEventListener("click", busy(make, "Saving…", async () => {
             await api("PUT", "/v1/image-aliases/main", { image_id: img.id });
             status(`main now points at ${short(img.id)}. Existing environments keep their image.`, "ok");
             await views.images();
           }));
+          action.push(make, " ");
+        }
+        if (!isMain) {
+          const remove = h("button", { type: "button", class: "danger" }, "Remove");
+          remove.addEventListener("click", busy(remove, "Removing…", async () => {
+            if (!confirm(`Remove image ${short(img.id)}? Its files are deleted; importing the same files again restores it.`)) return;
+            await api("DELETE", `/v1/images/${encodeURIComponent(img.id)}`);
+            status(`Removed ${short(img.id)}.`, "ok");
+            await views.images();
+          }));
+          action.push(remove);
         }
         return h("tr", {},
           h("td", {}, h("span", { class: "mono", title: img.id }, short(img.id)), " ",
@@ -285,7 +316,8 @@ views.images = async () => {
     h("h1", {}, "Images"),
     h("p", { class: "lead" }, "The main image is what new environments use. Moving it never changes existing environments."),
     h("h2", {}, "Staged on the host"), stagedList,
-    h("h2", {}, "Registered"), registered);
+    h("h2", {}, "Registered"), registered,
+    h("h2", {}, "Storage"), storageCard(storage));
 };
 
 views.defaults = async () => {
@@ -603,13 +635,23 @@ views.profile = async (id) => {
   const repo = h("input", { id: "dotfiles-repo", type: "url", spellcheck: "false", placeholder: "https://github.com/you/dotfiles", value: (spec.dotfiles && spec.dotfiles.repo) || "" });
   const ref = h("input", { id: "dotfiles-ref", spellcheck: "false", placeholder: "main", value: (spec.dotfiles && spec.dotfiles.ref) || "" });
   const save = h("button", { class: "primary", type: "submit" }, isNew ? "Create and build" : "Save and build");
+  let remove = null;
+  if (!isNew) {
+    remove = h("button", { type: "button", class: "danger" }, "Delete profile");
+    remove.addEventListener("click", busy(remove, "Deleting…", async () => {
+      if (!confirm(`Delete the ${profile.name} profile? Environments using it must be deleted first.`)) return;
+      await api("DELETE", `/v1/profiles/${encodeURIComponent(profile.id)}`);
+      location.hash = "#profiles";
+      status(`Deleted ${profile.name}.`, "ok");
+    }));
+  }
   const form = h("form", { class: "stack wide" },
     isNew ? h("label", { for: "profile-name" }, "Name", name) : null,
     h("div", { class: "tabs", role: "tablist" }, tabPackages, tabModule),
     packagesPane, modulePane,
     h("label", { class: "inline", for: "profile-unfree" }, unfree, " Allow unfree packages (Claude Code needs this)"),
     h("div", { class: "row" }, h("label", { for: "dotfiles-repo" }, "Dotfiles repository (optional, public https)", repo), h("label", { for: "dotfiles-ref" }, "Branch, tag, or commit", ref)),
-    h("div", {}, save));
+    h("div", {}, save, remove ? [" ", remove] : null));
   form.addEventListener("submit", busy(save, "Saving…", async () => {
     if (mode === "packages") addPkg();
     const body = { unfree: unfree.checked };
@@ -629,7 +671,7 @@ views.profile = async (id) => {
   const history = profile ? h("div", {},
     h("h2", {}, "Revisions"),
     profile.revisions.map((r, i) => h("details", { class: "revision", open: i === 0 },
-      h("summary", {}, `#${r.number} `, stateBadge(r.state), " ", h("span", { class: "muted" }, when(r.created_at)),
+      h("summary", {}, `#${r.number} `, stateBadge(r.state), r.pruned ? [" ", h("span", { class: "badge", title: "the drive was removed because nothing uses it; saving the same packages rebuilds it" }, "pruned")] : null, " ", h("span", { class: "muted" }, when(r.created_at)),
         r.dotfiles_commit && r.dotfiles_commit !== "none" ? h("span", { class: "muted mono" }, ` dotfiles ${r.dotfiles_commit.slice(0, 12)}`) : null),
       r.spec.module ? h("p", { class: "hint" }, "Home Manager module") : h("p", { class: "hint" }, (r.spec.packages || []).join(", ") || "only the required tools"),
       r.error ? h("p", { class: "status error" }, r.error) : null,

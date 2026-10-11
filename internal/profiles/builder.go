@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +16,11 @@ import (
 type Worker interface {
 	StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error
 	BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error)
+	ProfileDrives(ctx context.Context) ([]string, error)
+	RemoveProfileDrive(ctx context.Context, key string) error
 }
+
+const pruneGrace = 15 * time.Minute
 
 type Limits struct {
 	VCPUs      int
@@ -29,10 +34,11 @@ type Builder struct {
 	limits Limits
 	Poll   time.Duration
 	kick   chan struct{}
+	dirty  bool
 }
 
 func NewBuilder(db *sql.DB, worker Worker, limits Limits) *Builder {
-	return &Builder{db: db, worker: worker, limits: limits, Poll: 5 * time.Second, kick: make(chan struct{}, 1)}
+	return &Builder{db: db, worker: worker, limits: limits, Poll: 5 * time.Second, kick: make(chan struct{}, 1), dirty: true}
 }
 
 func (b *Builder) Kick() {
@@ -51,17 +57,54 @@ func (b *Builder) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-b.kick:
+			b.dirty = true
 		case <-time.After(b.Poll):
 		}
 	}
 }
 
 func (b *Builder) Step(ctx context.Context) error {
+	if b.dirty {
+		if err := b.Prune(ctx); err != nil {
+			return err
+		}
+		b.dirty = false
+	}
 	busy, err := b.followBuilding(ctx)
 	if err != nil || busy {
 		return err
 	}
 	return b.startPending(ctx)
+}
+
+func (b *Builder) Prune(ctx context.Context) error {
+	keep, err := b.keys(ctx, `SELECT r.build_key FROM profile_revisions r JOIN profiles p ON p.id = r.profile_id
+			WHERE r.state = 'ready' AND p.deleted_at IS NULL
+			AND r.number = (SELECT max(number) FROM profile_revisions WHERE profile_id = p.id AND state = 'ready')
+		UNION SELECT r.build_key FROM profile_revisions r JOIN environments e ON e.profile_revision_id = r.id WHERE e.observed_state <> 'deleted'
+		UNION SELECT build_key FROM profile_revisions WHERE state IN ('pending', 'building') OR updated_at > ?`,
+		time.Now().Add(-pruneGrace).UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	drives, err := b.worker.ProfileDrives(ctx)
+	if err != nil {
+		return err
+	}
+	for _, key := range drives {
+		if slices.Contains(keep, key) {
+			continue
+		}
+		if err := b.worker.RemoveProfileDrive(ctx, key); err != nil {
+			slog.Warn("could not remove an unused profile drive", "build_key", key, "error", err)
+			continue
+		}
+		if _, err := b.db.ExecContext(ctx, `UPDATE profile_revisions SET pruned_at = ? WHERE build_key = ? AND state = 'ready'`, timestamp(), key); err != nil {
+			return err
+		}
+		slog.Info("removed an unused profile drive", "build_key", key)
+	}
+	return nil
 }
 
 func (b *Builder) followBuilding(ctx context.Context) (bool, error) {
@@ -92,8 +135,9 @@ func (b *Builder) followBuilding(ctx context.Context) (bool, error) {
 }
 
 func (b *Builder) finish(ctx context.Context, key, from string, st lifecycle.BuildStatus) error {
-	_, err := b.db.ExecContext(ctx, `UPDATE profile_revisions SET state = ?, error = ?, log_tail = ?, dotfiles_commit = ?, updated_at = ? WHERE build_key = ? AND state = ?`,
+	_, err := b.db.ExecContext(ctx, `UPDATE profile_revisions SET state = ?, error = ?, log_tail = ?, dotfiles_commit = ?, pruned_at = NULL, updated_at = ? WHERE build_key = ? AND state = ?`,
 		st.State, st.Error, st.LogTail, st.DotfilesCommit, timestamp(), key, from)
+	b.dirty = true
 	return err
 }
 
@@ -125,7 +169,7 @@ func (b *Builder) startPending(ctx context.Context) error {
 		return err
 	}
 	var ready lifecycle.BuildStatus
-	err = b.db.QueryRowContext(ctx, `SELECT dotfiles_commit, log_tail FROM profile_revisions WHERE build_key = ? AND state = 'ready' LIMIT 1`, key).
+	err = b.db.QueryRowContext(ctx, `SELECT dotfiles_commit, log_tail FROM profile_revisions WHERE build_key = ? AND state = 'ready' AND pruned_at IS NULL LIMIT 1`, key).
 		Scan(&ready.DotfilesCommit, &ready.LogTail)
 	if err == nil {
 		ready.State = "ready"
