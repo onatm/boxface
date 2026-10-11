@@ -1,6 +1,6 @@
 # User Profiles and Builds
 
-**Status:** Done — P0–P6 on the droplet ([results](../research/2026-10-profile-builder.md)); module settings other than packages are not yet applied (open question)
+**Status:** Done — P0–P6 on the droplet, and module settings applied since 2026-10-11 ([results](../research/2026-10-profile-builder.md))
 
 **Roadmap:** [Usable configuration and operations](../ROADMAP.md#usable-configuration-and-operations), candidate bet "recipe/profile revision management"
 
@@ -118,5 +118,5 @@ Confirmed by the owner on 2026-10-10.
 ## Open Questions
 
 - How users without Nix knowledge find package names; a search proxied from `search.nixos.org` is a candidate after P5.
-- **Applying module settings (raised by U3).** Only `home.packages` content reaches the guest; `programs.*`, `home.file`, and session variables are built and dropped, and a user editing a module will expect them to work. Options: ship Home Manager's generated `home-files` on the profile drive and link or copy them into the home on first boot, alongside the chezmoi dotfiles; run a constrained activation; or reject other options until one exists.
+- ~~**Applying module settings (raised by U3).**~~ *Resolved 2026-10-11:* the builder ships Home Manager's generated `home-files` on the profile drive (`/nix/home-files`), a user service links each file into the home at every boot without overwriting files the user owns, before chezmoi applies personal dotfiles, and login shells source `hm-session-vars.sh`. Home Manager activation scripts (`home.activation`, `onChange`) still do not run.
 - Garbage collection of unused profile drives and cache disks, which grow by several GiB per revision. *Raised by P4:* the droplet's disk filled during P4 (profile drives, a 7 GiB per-owner cache, imported images, and experiment scratch), which stopped SQLite writes until space was freed; capacity checks count environment data disks only. Disk headroom and accounting for drives and caches are needed before other users build profiles.

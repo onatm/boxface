@@ -1,0 +1,12 @@
+[Unit]
+Description=Link the files the Boxface profile generates into the home
+ConditionPathIsDirectory=/nix/home-files
+Before=boxface-personalise.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/boxface-home-files
+
+[Install]
+WantedBy=default.target

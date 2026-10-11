@@ -131,3 +131,15 @@ Builds queued together ran one at a time (`u4` stayed `pending` until `u3` finis
 ### Finding: module settings are not applied
 
 A Home Manager module can set much more than packages (`programs.git`, shell configuration, `home.file`, session variables), and users editing a module in the web UI will expect those settings to take effect. Today they are evaluated and built but silently dropped. Options, recorded in the plan's open questions: export Home Manager's generated `home-files` with the profile and link or copy them into the home on first boot, as chezmoi does for dotfiles; or run a constrained activation; or reject options other than packages until one of these exists.
+
+## Module Settings Applied
+
+**Date:** 2026-10-11. **Result:** Pass. Resolves the U3 finding.
+
+The builder now copies Home Manager's `home-files` (the tree of generated files) and its closure onto the profile drive as `/nix/home-files`, and the builder version moved to 2 so existing specs rebuild with it. The base image gained a user service that links each generated file into the home at every boot and a login-shell script that sources `hm-session-vars.sh`.
+
+A module setting `programs.git.settings.user.name`, `home.sessionVariables.BOXFACE_HM`, and `home.file.".config/boxface-test".text`, plus `fd`, built in 63 s. In an environment from it, `git config user.name` returned "Boxface Test", a login shell had `BOXFACE_HM=on`, `~/.config/boxface-test` held the generated text as a link to `/nix/home-files/...`, and `fd` ran. Home Manager's own default files (`environment.d/10-home-manager.conf`, a `tray.target` user unit, `.keep` files) were linked too.
+
+Before deploying, the linker was tested against a fake tree: it created links, skipped a `.bashrc` the user owned and reported it, repaired a stale link of its own, and a second run changed nothing.
+
+Existing profile revisions built before this change keep working without generated files; saving the profile again rebuilds it with them.

@@ -66,9 +66,11 @@ fi
 
 step "packing the profile drive" "could not pack the profile drive"
 home_path=$(readlink -f /nix/.home/generation/home-path)
-nix-store -qR "$home_path" > /nix/.tmp/closure.txt
+home_files=$(readlink -f /nix/.home/generation/home-files)
+nix-store -qR "$home_path" "$home_files" > /nix/.tmp/closure.txt
 while read -r path; do cp -al "$path" "$out/store/"; done < /nix/.tmp/closure.txt
 ln -s "$home_path" "$out/profile"
+ln -s "$home_files" "$out/home-files"
 closure_mib=$(du -sm "$out/store" | cut -f1)
 mkfs.ext4 -q -L boxface-profile -d "$out" /dev/vdd
 rm -rf "$out"

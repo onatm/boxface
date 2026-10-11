@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const builderVersion = "1"
+const builderVersion = "2"
 
 var ErrInvalid = errors.New("invalid profile")
 
