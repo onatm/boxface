@@ -47,7 +47,7 @@ fi
 chmod 0755 "$work"
 cp -a "$src" "$work/src"
 src="$work/src"
-chmod -R a+rX "$src"
+chown -R 1000:1000 "$src"
 mkdir -p "$work/cache"
 chown 1000:1000 "$work/cache"
 grep -v '^[^:]*:[^:]*:1000:' /etc/passwd > "$work/passwd" || true
@@ -65,10 +65,20 @@ as_dev() {
     "$work/cache" "$work" "$@"
 }
 
-encrypted="$(as_dev "$chezmoi" managed --source "$src" --include=encrypted --path-style=source-relative)"
+root="$src"
+[ ! -f "$src/.chezmoiroot" ] || root="$src/$(cat "$src/.chezmoiroot")"
+format=toml
+for template in "$root"/.chezmoi.*.tmpl; do
+  [ -f "$template" ] || continue
+  format=${template##*/.chezmoi.}
+  format=${format%.tmpl}
+done
+config="$work/cache/chezmoi.$format"
+as_dev "$chezmoi" init --source "$src" --config "$config" --no-tty --promptDefaults
+encrypted="$(as_dev "$chezmoi" managed --source "$src" --config "$config" --include=encrypted --path-style=source-relative)"
 [ -z "$encrypted" ] || printf 'dotfiles: skipped encrypted files:\n%s\n' "$encrypted" | sed '2,$s/^/  /'
 
-if ! as_dev "$chezmoi" archive --source "$src" --format tar --exclude=scripts,encrypted > "$work/home.tar" 2> "$work/err"; then
+if ! as_dev "$chezmoi" archive --source "$src" --config "$config" --format tar --exclude=scripts,encrypted > "$work/home.tar" 2> "$work/err"; then
   cat "$work/err"
   if grep -qiE 'error calling [a-z]*(onepassword|bitwarden|lastpass|pass|keepass|keeper|dashlane|doppler|vault|secret|rbw)' "$work/err"; then
     echo "dotfiles: a template reads a password manager, which the builder cannot reach; save secrets on the Credentials page instead"
@@ -77,7 +87,7 @@ if ! as_dev "$chezmoi" archive --source "$src" --format tar --exclude=scripts,en
 fi
 tar -x --no-same-owner -C "$out" -f "$work/home.tar"
 
-as_dev "$chezmoi" managed --source "$src" --exclude=scripts,encrypted --include=files,symlinks --path-style=all --format=json |
+as_dev "$chezmoi" managed --source "$src" --config "$config" --exclude=scripts,encrypted --include=files,symlinks --path-style=all --format=json |
   awk '
     match($0, /^  "(.*)": \{$/) { target = substr($0, 4, length($0) - 7) }
     match($0, /"sourceRelative": "(.*)"/) {
