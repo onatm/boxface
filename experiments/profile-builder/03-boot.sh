@@ -2,7 +2,7 @@
 # Boots the base image with the built profile drive at /nix, checks the tools and personalisation over SSH, and stops.
 set -euo pipefail
 
-work="${WORK:-/var/tmp/boxface-profile-spike}"
+work="${WORK:-/var/tmp/boxface-images/profiles}"
 out="$work/out"
 tap=bfxprofspike
 vsock="$work/boot-vsock.sock"

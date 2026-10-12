@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Builds a profile flake inside a Firecracker builder VM into $WORK/out/profile.img. Run as root on the host after
-# 01-images.sh, with boxface-worker running so its nftables rules isolate the bfx tap.
-#   02-build.sh [FLAKE_DIR [DOTFILES_DIR]]   defaults: experiments/gate-c/profile and experiments/gate-c/dotfiles
+# images/profile-images.sh, with boxface-worker running so its nftables rules isolate the bfx tap.
+#   02-build.sh [FLAKE_DIR [DOTFILES_DIR]]   defaults: images/profile and images/dotfiles
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
-work="${WORK:-/var/tmp/boxface-profile-spike}"
+work="${WORK:-/var/tmp/boxface-images/profiles}"
 out="$work/out"
-flake="${1:-$repo/experiments/gate-c/profile}"
-dotfiles="${2:-$repo/experiments/gate-c/dotfiles}"
+flake="${1:-$repo/images/profile}"
+dotfiles="${2:-$repo/images/dotfiles}"
 tap=bfxprofspike
 memory_mib="${MEMORY_MIB:-3072}"
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }

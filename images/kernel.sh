@@ -8,7 +8,7 @@ FC_CONFIG=microvm-kernel-ci-x86_64-6.18.config
 MOBY_COMMIT=417af1ddca4ae495505b653f3be9037842470035
 
 here="$(cd "$(dirname "$0")" && pwd)"
-work="${WORK:-/var/tmp/boxface-gate-a}"
+work="${WORK:-/var/tmp/boxface-images/kernel}"
 out="$work/out"
 src="$work/linux-${KERNEL_VERSION}"
 mkdir -p "$work" "$out"

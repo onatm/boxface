@@ -6,14 +6,14 @@ MKOSI_COMMIT=ecf7f5702bb2052b7a69cab3fe7d37bc3b9ad77b
 DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 
 here="$(cd "$(dirname "$0")" && pwd)"
-work="${WORK:-/var/tmp/boxface-gate-a}"
+work="${WORK:-/var/tmp/boxface-images/rootfs}"
 out="$work/out"
 mkdir -p "$work" "$out"
 
 apt-get update
 apt-get install -y git python3 debian-archive-keyring gnupg e2fsprogs curl
 
-mkosi_dir="$work/mkosi"
+mkosi_dir="${MKOSI_DIR:-/var/tmp/boxface-images/mkosi}"
 [ -d "$mkosi_dir" ] || git clone --depth 1 --branch "$MKOSI_VERSION" https://github.com/systemd/mkosi "$mkosi_dir"
 [ "$(git -C "$mkosi_dir" rev-parse HEAD)" = "$MKOSI_COMMIT" ] || { echo "unexpected mkosi commit" >&2; exit 1; }
 
@@ -32,7 +32,7 @@ Signed-By: /etc/apt/keyrings/docker.asc
 EOF
 
 start=$(date +%s)
-"$mkosi_dir/bin/mkosi" -C "$here/image" --sandbox-tree="$sandbox" --output-directory="$work/image" -f build
+"$mkosi_dir/bin/mkosi" -C "$here/system" --sandbox-tree="$sandbox" --output-directory="$work/image" -f build
 end=$(date +%s)
 
 tree="$work/image/rootfs"

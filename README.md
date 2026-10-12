@@ -5,7 +5,7 @@
 
 Boxface runs persistent development environments inside Firecracker microVMs on a Linux server you control. A lightweight client creates an environment, connects to it over SSH, and runs coding-agent CLIs there. The environment keeps running when the client disconnects.
 
-Each environment has a read-only managed baseline (Debian, rootless Docker, and a Nix-built toolset with Claude Code, Codex, OpenCode, Pi, mise, Node, and Rust) and its own persistent data disk for your home directory and workspace.
+Each environment has a read-only managed baseline (Debian, rootless Docker, and a Nix-built toolset with Claude Code, Codex, OpenCode, Pi, mise, Node, and Rust) and its own persistent data disk for your home directory and workspace. The baseline is read-only to the environment, not to you: you choose its packages, tools, and configuration, and [rebuild it](#customise-the-baseline) when you want to change them.
 
 ## Features
 
@@ -24,7 +24,7 @@ Boxface 0.1.0 targets a single owner on one KVM host. Image builds through the A
 **Host**
 - Linux on x86-64 with KVM (`/dev/kvm`). Tested on Ubuntu 24.04 with systemd 255.
 - Root access, `nftables`, `iproute2`, `e2fsprogs`, `curl`, and `python3`.
-- Firecracker at `/usr/local/bin/firecracker`. `experiments/gate-a/00-host-setup.sh` installs a pinned, checksum-verified v1.17.0.
+- Firecracker at `/usr/local/bin/firecracker`. `images/host-setup.sh` installs a pinned, checksum-verified v1.17.0.
 - Disk space for images (about 7 GiB each) and data disks (sparse, 20 GiB by default).
 
 **Build machine**
@@ -72,16 +72,32 @@ go build -o boxfacectl ./cmd/boxfacectl   # for the machine you're on
 
 ## Build a guest image
 
-Images are currently built by the experiment scripts on the host, as root. The scripts install their build dependencies with `apt`, so they need a Debian or Ubuntu host. Copy the repository to the host first, with `boxface-run` at `bin/linux-amd64/boxface-run` (from `task build` or the release archive), then:
+Images are built on the host, as root, by the scripts in `images/`. They install their build dependencies with `apt`, so they need a Debian or Ubuntu host. Copy the repository to the host first, with `boxface-run` at `bin/linux-amd64/boxface-run` (from `task build` or the release archive), then:
 
 ```sh
-experiments/gate-a/00-host-setup.sh    # Firecracker; checks KVM
-experiments/gate-a/01-kernel.sh        # guest kernel (about 25 minutes on 2 vCPUs)
-experiments/gate-c/01-profile.sh       # installs Nix on the host, builds the user toolset
-experiments/gate-c/02-image.sh         # builds the read-only root filesystem
+images/host-setup.sh    # Firecracker; checks KVM
+images/kernel.sh        # guest kernel (about 25 minutes on 2 vCPUs)
+images/profile.sh       # installs Nix on the host, builds the toolset
+images/image.sh         # builds the read-only root filesystem with the toolset
 ```
 
-The result is `/var/tmp/boxface-gate-c/out/vmlinux` and `/var/tmp/boxface-gate-c/out/rootfs.ext4`. The toolset is defined in `experiments/gate-c/profile/flake.nix`, and the personal configuration applied on first boot is in `experiments/gate-c/dotfiles/`. No credentials are built into the image.
+The result is `/var/tmp/boxface-images/main/out/vmlinux` and `/var/tmp/boxface-images/main/out/rootfs.ext4`. No credentials, host keys, or machine IDs are built into the image; the build fails if it finds any.
+
+For [profiles](#profiles), build a base image without a toolset and the builder image instead, with `images/profile-images.sh` after `kernel.sh` and `profile.sh`. The results are `vmlinux`, `base.ext4`, and `builder.ext4` in `/var/tmp/boxface-images/profiles/out/`.
+
+### Customise the baseline
+
+The baseline is read-only inside environments, so nothing an agent or workload does can change it, but it is yours to define. Edit these and rebuild the image:
+
+| What | Where |
+|---|---|
+| System packages and services (Debian, Docker, SSH) | `images/system/` ([mkosi](https://github.com/systemd/mkosi) configuration and files) |
+| Guest integration: PATH, credential launchers, first-boot setup | `images/guest/` |
+| Toolset: agents, languages, CLIs | `images/profile/flake.nix` (Nix packages or a Home Manager module) |
+| Personal configuration applied on first boot | `images/dotfiles/` ([chezmoi](https://www.chezmoi.io) source) |
+| Guest kernel options | `images/kernel.fragment` |
+
+Register the rebuilt image and point `main` at it; new environments use it, and existing environments keep the image they were created with. With profiles, change the toolset on the web UI's Profiles page instead: no image rebuild is needed.
 
 ## Install on the host
 
@@ -101,7 +117,7 @@ Run these as root on the host.
 
    ```sh
    mkdir /var/lib/boxface/import/base
-   cp /var/tmp/boxface-gate-c/out/{vmlinux,rootfs.ext4} /var/lib/boxface/import/base/
+   cp /var/tmp/boxface-images/main/out/{vmlinux,rootfs.ext4} /var/lib/boxface/import/base/
    chown -R boxface:boxface /var/lib/boxface/import/base
    ```
 
@@ -203,13 +219,13 @@ Agents sign in inside the environment, once per environment: run `claude` and `/
 
 `connect` runs your `ssh` with the device key, the environment's host key pinned in `known_hosts` beside the login file, and `boxfacectl tunnel` as the proxy command, so it works the same through a public address or Tailscale. Closing the terminal or losing the network leaves tmux and everything in it running; run `connect` again to reattach. Environments created before host keys were pinned have none and must be recreated.
 
-The image needs `tmux` in its profile; `experiments/gate-c/profile/flake.nix` includes it.
+The image needs `tmux` in its profile; `images/profile/flake.nix` includes it.
 
 Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp` and `/run` are in memory. The root filesystem is read-only, there is no sudo, and Docker runs rootless as `dev`.
 
 ### Profiles
 
-A profile is the set of tools your environments get, built from Nix packages (or a Home Manager module) in an isolated builder VM and attached to environments as a read-only drive. Profiles are managed on the web UI's Profiles page or through the API (`/v1/profiles`). `boxfacectl create NAME` uses the profile named `main` once it has a ready revision, and `--profile NAME` picks another. An environment keeps the revision it was created with; `boxfacectl inspect` shows when a newer one is ready. Profiles need the base image and builder image from `experiments/profile-builder/01-images.sh`: import the base image as `main`, and copy the builder's `vmlinux` and `rootfs.ext4` to `/var/lib/boxface/builder`.
+A profile is the set of tools your environments get, built from Nix packages (or a Home Manager module) in an isolated builder VM and attached to environments as a read-only drive. Profiles are managed on the web UI's Profiles page or through the API (`/v1/profiles`). `boxfacectl create NAME` uses the profile named `main` once it has a ready revision, and `--profile NAME` picks another. An environment keeps the revision it was created with; `boxfacectl inspect` shows when a newer one is ready. Profiles need the base image and builder image from `images/profile-images.sh`: import `vmlinux` with `base.ext4` (as `rootfs.ext4`) as `main`, and copy `vmlinux` and `builder.ext4` (as `rootfs.ext4`) to `/var/lib/boxface/builder`.
 
 Disk space: the web UI's Images page shows free space and what uses it. Unused profile drives are removed automatically; remove images that no environment uses, or clear the Nix build cache, to free more. Profile builds need 10 GiB free.
 
@@ -276,14 +292,14 @@ task dist          # release archives and SHA256SUMS in dist/
 Run the worker integration test as root on a KVM host:
 
 ```sh
-BOXFACE_IT_IMAGE=/var/tmp/boxface-gate-c/out ./worker.integration.test -test.v
+BOXFACE_IT_IMAGE=/var/tmp/boxface-images/main/out ./worker.integration.test -test.v
 ```
 
 Acceptance scenarios run as root on a host with the services installed:
 
 ```sh
 BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> test/acceptance/lifecycle.sh
-BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> BOXFACE_KERNEL=/var/tmp/boxface-gate-c/out/vmlinux test/acceptance/recovery.sh
+BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> BOXFACE_KERNEL=/var/tmp/boxface-images/main/out/vmlinux test/acceptance/recovery.sh
 ```
 
 CI runs lint, tests, and the build on every pull request. To release, add the version's section to `CHANGELOG.md`, then push a `vX.Y.Z` tag: the release workflow runs the checks, builds the archives, and publishes a GitHub release with that section as its notes.
