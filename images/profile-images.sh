@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Builds the spike's builder image (Debian + static Nix) and a base image with no profile. Run as root on the host
-# after experiments/gate-a/01-kernel.sh and with Nix installed (experiments/gate-b/01-profile.sh installs it).
+# Builds the profile builder image (Debian + static Nix) and a base image with no profile. Run as root on the host
+# after kernel.sh and with Nix installed (profile.sh installs it).
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(cd "$here/../.." && pwd)"
-work="${WORK:-/var/tmp/boxface-profile-spike}"
+repo="$(cd "$here/.." && pwd)"
+work="${WORK:-/var/tmp/boxface-images/profiles}"
 out="$work/out"
-gate_a="${GATE_A_WORK:-/var/tmp/boxface-gate-a}"
+kernel="${KERNEL_WORK:-/var/tmp/boxface-images/kernel}"
 mkdir -p "$out"
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 [ -x "$repo/bin/linux-amd64/boxface-run" ] || { echo "build boxface-run first (task build)" >&2; exit 1; }
 export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 export NIX_CONFIG="experimental-features = nix-command flakes"
 
-nix build --inputs-from "$repo/experiments/gate-c/profile" nixpkgs#nixStatic -o "$work/nix-static"
+nix build --inputs-from "$here/profile" nixpkgs#nixStatic -o "$work/nix-static"
 
 started=$(date +%s)
-mkosi="${MKOSI:-$(ls -d /var/tmp/boxface-gate-*/mkosi/bin/mkosi 2> /dev/null | head -1)}"
-[ -x "$mkosi" ] || { echo "no mkosi checkout found; run experiments/gate-a/02-image.sh once or set MKOSI" >&2; exit 1; }
+mkosi="${MKOSI:-${MKOSI_DIR:-/var/tmp/boxface-images/mkosi}/bin/mkosi}"
+[ -x "$mkosi" ] || { echo "no mkosi checkout found; run rootfs.sh or image.sh once or set MKOSI" >&2; exit 1; }
 "$mkosi" -C "$here/builder" --output-directory="$work/builder" -f build
 tree="$work/builder/rootfs"
 install -d "$tree/usr/local/bin"
@@ -34,8 +34,8 @@ run_tree="$work/run-tree"
 rm -rf "$run_tree"
 install -D -m 0755 "$repo/bin/linux-amd64/boxface-run" "$run_tree/usr/local/bin/boxface-run"
 started=$(date +%s)
-WORK="$work/base" EXTRA_TREES="$repo/experiments/gate-b/image $repo/experiments/gate-c/image $run_tree $here/base" \
-  "$repo/experiments/gate-a/02-image.sh" > "$work/base-build.log" 2>&1 || { tail -20 "$work/base-build.log"; exit 1; }
+WORK="$work/base" EXTRA_TREES="$here/guest $run_tree $here/base" \
+  "$here/rootfs.sh" > "$work/base-build.log" 2>&1 || { tail -20 "$work/base-build.log"; exit 1; }
 cp "$work/base/out/rootfs.ext4" "$out/base.ext4"
-cp "$gate_a/out/vmlinux" "$out/vmlinux"
+cp "$kernel/out/vmlinux" "$out/vmlinux"
 echo "base image: $(( $(stat -c %s "$out/base.ext4") >> 20 )) MiB in $(( $(date +%s) - started )) s"
