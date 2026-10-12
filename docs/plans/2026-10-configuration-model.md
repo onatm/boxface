@@ -83,7 +83,7 @@ Trade-offs accepted: templates and `modify_` scripts run in the builder, never i
 | M2. Devices *(done)* | Migration with `token_id` and backfill; keys added with a device token are linked; `GET`/`DELETE /v1/devices`; `/v1/tokens` removed | Tests: login links the device key; revoking a device revokes the token and deletes its keys; a hand-added key survives every revocation; another owner's device cannot be revoked; the backfill links only same-owner, same-name pairs |
 | M3. Web UI *(done)* | Grouped navigation; Overview, Template, Devices, and Host pages; Images and Profiles under Baseline; the checklist asks for the template's image and profile instead of two `main`s | Every page reachable from the navigation at phone width; no page shows host state except Host and Overview; the Web UI design doc's page list matches |
 | M4. Dotfiles *(done; host test pending)* | Builder renders and records the tree; seeder in the base image; `chezmoi` removed from required packages; `boxface-personalise` removed from `images/guest/` | Integration test on the host: a chezmoi repository with a template seeds rendered files; a `run_` script does not run; a credential template fails the build with its message; a second boot changes nothing; a user-edited file survives a restart |
-| M5. Docs | README, Web UI, API, CLI, Access and Sessions, Personal Configuration, Guest, and Architecture updated to the new names | No doc names Defaults, Clients, or `/v1/defaults` outside plans and research |
+| M5. Docs *(done)* | README, Web UI, API, CLI, Access and Sessions, Personal Configuration, Guest, and Architecture updated to the new names | No doc names Defaults, Clients, or `/v1/defaults` outside plans and research |
 
 ## Open Questions
 

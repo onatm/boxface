@@ -52,7 +52,7 @@ The MVP is successful when this is reliable across real development days, not me
 
 ## User-Facing Behavior
 
-- A repository need not contain Boxface configuration. Saved server defaults allow `boxfacectl create NAME` with no supplied file.
+- A repository need not contain Boxface configuration. The `default` template allows `boxfacectl create NAME` with no supplied file.
 - The CLI is the terminal path; the web UI manages recipes, profiles, and environments and shows connection instructions.
 - Connecting to a stopped environment starts it on the same image, then connects; nothing starts without a client request.
 - Previews open on the tablet through a loopback-bound forward, never a public URL.
