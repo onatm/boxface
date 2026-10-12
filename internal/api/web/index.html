@@ -14,14 +14,25 @@
   <span class="who" id="who"></span>
 </header>
 <nav id="nav" class="nav" aria-label="Sections" hidden>
-  <a href="#setup">Setup</a>
-  <a href="#profiles">Profiles</a>
-  <a href="#images">Images</a>
-  <a href="#defaults">Defaults</a>
-  <a href="#keys">SSH keys</a>
-  <a href="#credentials">Credentials</a>
-  <a href="#clients">Clients</a>
-  <a href="#environments">Environments</a>
+  <a href="#overview">Overview</a>
+  <div class="nav-group" role="group" aria-label="Environments">
+    <span class="nav-label" aria-hidden="true">Environments</span>
+    <a href="#environments">Environments</a>
+    <a href="#template">Template</a>
+    <a href="#credentials">Credentials</a>
+  </div>
+  <div class="nav-group" role="group" aria-label="Baseline">
+    <span class="nav-label" aria-hidden="true">Baseline</span>
+    <a href="#images">Images</a>
+    <a href="#profiles">Profiles</a>
+  </div>
+  <div class="nav-group" role="group" aria-label="Access">
+    <span class="nav-label" aria-hidden="true">Access</span>
+    <a href="#devices">Devices</a>
+  </div>
+  <div class="nav-group">
+    <a href="#host">Host</a>
+  </div>
 </nav>
 <main id="main">
   <p id="status" class="status" role="status" aria-live="polite"></p>
