@@ -218,7 +218,7 @@ function mainImageID(images) {
 
 views.setup = async () => {
   const [keys, images, defaults, tokens, profiles] = await Promise.all([
-    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/defaults"), api("GET", "/v1/tokens"), api("GET", "/v1/profiles"),
+    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/templates/default"), api("GET", "/v1/tokens"), api("GET", "/v1/profiles"),
   ]);
   const defaultProfile = profiles.profiles.find((p) => p.name === (defaults.profile || "main"));
   const steps = [
@@ -321,7 +321,7 @@ views.images = async () => {
 };
 
 views.defaults = async () => {
-  const [d, caps, images] = await Promise.all([api("GET", "/v1/defaults"), api("GET", "/v1/capabilities"), api("GET", "/v1/images")]);
+  const [d, caps, images] = await Promise.all([api("GET", "/v1/templates/default"), api("GET", "/v1/capabilities"), api("GET", "/v1/images")]);
   const imageOptions = new Set(["main"]);
   for (const img of images.images) for (const a of img.aliases || []) imageOptions.add(a);
   const field = (label, name, value, extra) => {
@@ -339,7 +339,7 @@ views.defaults = async () => {
     profileLabel,
     h("div", { class: "row" }, vcpusLabel, memoryLabel, diskLabel), h("div", {}, save));
   form.addEventListener("submit", busy(save, "Saving…", async () => {
-    await api("PUT", "/v1/defaults", { image: image.value.trim(), profile: profile.value.trim(), vcpus: +vcpus.value, memory_mib: +memory.value, disk_gib: +disk.value });
+    await api("PUT", "/v1/templates/default", { image: image.value.trim(), profile: profile.value.trim(), vcpus: +vcpus.value, memory_mib: +memory.value, disk_gib: +disk.value });
     await views.defaults();
     status("Defaults saved. They apply to environments created from now on.", "ok");
   }));
@@ -546,14 +546,14 @@ function stateBadge(state) {
 }
 
 views.profiles = async () => {
-  const [data, defaults] = await Promise.all([api("GET", "/v1/profiles"), api("GET", "/v1/defaults")]);
+  const [data, defaults] = await Promise.all([api("GET", "/v1/profiles"), api("GET", "/v1/templates/default")]);
   const def = defaults.profile || "main";
   const rows = data.profiles.map((p) => {
     const actions = [h("a", { href: `#profile/${p.id}` }, "Edit")];
     if (p.name !== def) {
       const make = h("button", { type: "button" }, "Make default");
       make.addEventListener("click", busy(make, "Saving…", async () => {
-        await api("PUT", "/v1/defaults", { image: defaults.image, profile: p.name, vcpus: defaults.vcpus, memory_mib: defaults.memory_mib, disk_gib: defaults.disk_gib });
+        await api("PUT", "/v1/templates/default", { image: defaults.image, profile: p.name, vcpus: defaults.vcpus, memory_mib: defaults.memory_mib, disk_gib: defaults.disk_gib });
         status(`New environments now use ${p.name}.`, "ok");
         await views.profiles();
       }));

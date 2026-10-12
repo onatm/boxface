@@ -589,7 +589,7 @@ func TestRetainedDiskCanBePurgedAfterDelete(t *testing.T) {
 	}
 }
 
-func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
+func TestCreateUsesDefaultTemplateAliasesAndOwnerKeys(t *testing.T) {
 	db := openDB(t)
 	w := newFakeWorker()
 	s, r, _ := newService(t, db, w)
@@ -613,7 +613,7 @@ func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
 	r.Wait()
 	env := mustEnvironment(t, s, first.EnvironmentID)
 	if env.ImageID != image || env.VCPUs != 2 || env.MemoryMiB != 2048 || env.ObservedState != "running" {
-		t.Fatalf("environment from built-in defaults = %+v", env)
+		t.Fatalf("environment from the built-in template = %+v", env)
 	}
 	if keys := w.keys[env.ID]; len(keys) != 1 || !strings.HasPrefix(keys[0], "ssh-ed25519 ") {
 		t.Fatalf("VM keys = %q", keys)
@@ -622,12 +622,19 @@ func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
 	if _, err := db.Exec(`UPDATE image_aliases SET image_id = 'image-2' WHERE name = 'main'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDefaults(ctx, owner, Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); err != nil {
+	saved, err := s.SetTemplate(ctx, owner, DefaultTemplate, Template{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if saved != (Template{Name: DefaultTemplate, Image: "main", Profile: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4, Saved: true}) {
+		t.Fatalf("saved template = %+v", saved)
+	}
+	if got, err := s.Template(ctx, owner, DefaultTemplate); err != nil || got != saved {
+		t.Fatalf("template after save = %+v, %v; want %+v", got, err, saved)
 	}
 	retry, err := s.Create(ctx, owner, "first-key", CreateRequest{Name: "first"})
 	if err != nil || retry != first {
-		t.Fatalf("retry after defaults changed = %+v, %v; want %+v", retry, err, first)
+		t.Fatalf("retry after the template changed = %+v, %v; want %+v", retry, err, first)
 	}
 	second, err := s.Create(ctx, owner, "", CreateRequest{Name: "second", MemoryMiB: 1024})
 	if err != nil {
@@ -635,16 +642,22 @@ func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
 	}
 	r.Wait()
 	if env := mustEnvironment(t, s, second.EnvironmentID); env.ImageID != "image-2" || env.VCPUs != 1 || env.MemoryMiB != 1024 {
-		t.Fatalf("environment from saved defaults = %+v", env)
+		t.Fatalf("environment from the saved template = %+v", env)
 	}
 	if env := mustEnvironment(t, s, first.EnvironmentID); env.ImageID != image {
 		t.Fatalf("moving main changed an existing environment: %+v", env)
 	}
-	if d, err := s.Defaults(ctx, otherOwner); err != nil || d != builtinDefaults {
-		t.Fatalf("other owner's defaults = %+v, %v", d, err)
+	if list, err := s.Templates(ctx, otherOwner); err != nil || len(list) != 1 || list[0] != builtinTemplate {
+		t.Fatalf("other owner's templates = %+v, %v", list, err)
 	}
-	if err := s.SetDefaults(ctx, owner, Defaults{VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("defaults without image: err = %v", err)
+	if _, err := s.SetTemplate(ctx, owner, DefaultTemplate, Template{VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("template without image: err = %v", err)
+	}
+	if _, err := s.SetTemplate(ctx, owner, "big", Template{Image: "main", VCPUs: 4, MemoryMiB: 8192, DiskGiB: 40}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("template other than default: err = %v", err)
+	}
+	if _, err := s.Template(ctx, owner, "big"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get template other than default: err = %v", err)
 	}
 }
 
@@ -842,7 +855,7 @@ func TestCreateResolvesProfiles(t *testing.T) {
 	if env := mustEnvironment(t, s, tools.EnvironmentID); env.Profile != "tools" {
 		t.Fatalf("explicit profile = %+v", env)
 	}
-	if err := s.SetDefaults(ctx, owner, Defaults{Image: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 4, Profile: "tools"}); err != nil {
+	if _, err := s.SetTemplate(ctx, owner, DefaultTemplate, Template{Image: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 4, Profile: "tools"}); err != nil {
 		t.Fatal(err)
 	}
 	viaDefault, err := s.Create(ctx, owner, "", CreateRequest{Name: "viadefault", ImageID: image})

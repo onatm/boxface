@@ -387,13 +387,15 @@ func TestConfigurationRoutes(t *testing.T) {
 		t.Fatalf("images = %+v", list.Images)
 	}
 
-	var d lifecycle.Defaults
-	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
-	if d.Image != "main" || d.VCPUs != 2 {
-		t.Fatalf("built-in defaults = %+v", d)
+	var d lifecycle.Template
+	e.do("one", http.MethodGet, "/v1/templates/default", nil, http.StatusOK, &d)
+	if d.Name != "default" || d.Image != "main" || d.VCPUs != 2 {
+		t.Fatalf("built-in template = %+v", d)
 	}
-	e.errorCode("one", http.MethodPut, "/v1/defaults", map[string]any{"image": "main", "vcpus": 0, "memory_mib": 512, "disk_gib": 4}, http.StatusBadRequest)
-	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
+	e.errorCode("one", http.MethodPut, "/v1/templates/default", map[string]any{"image": "main", "vcpus": 0, "memory_mib": 512, "disk_gib": 4}, http.StatusBadRequest)
+	e.errorCode("one", http.MethodPut, "/v1/templates/big", map[string]any{"image": "main", "vcpus": 1, "memory_mib": 512, "disk_gib": 4}, http.StatusNotFound)
+	e.errorCode("one", http.MethodGet, "/v1/templates/big", nil, http.StatusNotFound)
+	e.do("one", http.MethodPut, "/v1/templates/default", lifecycle.Template{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
 
 	var acc lifecycle.Accepted
 	e.do("one", http.MethodPost, "/v1/environments", map[string]string{"name": "travel"}, http.StatusAccepted, &acc)
@@ -801,7 +803,7 @@ func TestWebSessionWithTailscaleIdentity(t *testing.T) {
 	}
 }
 
-func TestStagedImportsAndSavedDefaults(t *testing.T) {
+func TestStagedImportsAndSavedTemplate(t *testing.T) {
 	e := setup(t, lifecycle.Capacity{})
 	e.stage("next")
 	var staged struct {
@@ -811,15 +813,22 @@ func TestStagedImportsAndSavedDefaults(t *testing.T) {
 	if len(staged.Staged) != 1 || staged.Staged[0].Source != "next" {
 		t.Fatalf("staged = %+v", staged.Staged)
 	}
-	var d map[string]any
-	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
-	if d["saved"] != false || d["image"] != "main" {
-		t.Fatalf("defaults = %v", d)
+	var list struct {
+		Templates []map[string]any `json:"templates"`
 	}
-	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
-	e.do("one", http.MethodGet, "/v1/defaults", nil, http.StatusOK, &d)
-	if d["saved"] != true {
-		t.Fatalf("defaults after save = %v", d)
+	e.do("one", http.MethodGet, "/v1/templates", nil, http.StatusOK, &list)
+	if len(list.Templates) != 1 || list.Templates[0]["name"] != "default" || list.Templates[0]["saved"] != false || list.Templates[0]["image"] != "main" {
+		t.Fatalf("templates = %v", list.Templates)
+	}
+	var d map[string]any
+	e.do("one", http.MethodPut, "/v1/templates/default", lifecycle.Template{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}, http.StatusOK, nil)
+	e.do("one", http.MethodGet, "/v1/templates/default", nil, http.StatusOK, &d)
+	if d["saved"] != true || d["vcpus"] != float64(1) {
+		t.Fatalf("template after save = %v", d)
+	}
+	e.do("two", http.MethodGet, "/v1/templates/default", nil, http.StatusOK, &d)
+	if d["saved"] != false {
+		t.Fatalf("another owner's template = %v", d)
 	}
 }
 
@@ -953,7 +962,7 @@ func TestCleanupRoutes(t *testing.T) {
 	if code := e.errorCode("one", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusConflict); code != "in_use" {
 		t.Fatalf("delete default profile: code = %s", code)
 	}
-	e.do("one", http.MethodPut, "/v1/defaults", lifecycle.Defaults{Image: "main", Profile: "other", VCPUs: 1, MemoryMiB: 512, DiskGiB: 2}, http.StatusOK, nil)
+	e.do("one", http.MethodPut, "/v1/templates/default", lifecycle.Template{Image: "main", Profile: "other", VCPUs: 1, MemoryMiB: 512, DiskGiB: 2}, http.StatusOK, nil)
 	e.errorCode("two", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusNotFound)
 	e.do("one", http.MethodDelete, "/v1/profiles/"+p.ID, nil, http.StatusNoContent, nil)
 

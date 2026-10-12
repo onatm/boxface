@@ -400,11 +400,11 @@ func (c *cli) imageDelete(ctx context.Context, id string) error {
 func (c *cli) create(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	req := lifecycle.CreateRequest{}
-	fs.StringVar(&req.ImageID, "image", "", "image ID or alias; the server default when omitted")
-	fs.StringVar(&req.Profile, "profile", "", "profile name; the server default (main) when omitted")
-	fs.IntVar(&req.VCPUs, "vcpus", 0, "vCPUs; the server default when omitted")
-	fs.IntVar(&req.MemoryMiB, "memory-mib", 0, "guest memory in MiB; the server default when omitted")
-	fs.IntVar(&req.DiskGiB, "disk-gib", 0, "data disk size in GiB; the server default when omitted")
+	fs.StringVar(&req.ImageID, "image", "", "image ID or alias; the default template's when omitted")
+	fs.StringVar(&req.Profile, "profile", "", "profile name; the default template's when omitted")
+	fs.IntVar(&req.VCPUs, "vcpus", 0, "vCPUs; the default template's when omitted")
+	fs.IntVar(&req.MemoryMiB, "memory-mib", 0, "guest memory in MiB; the default template's when omitted")
+	fs.IntVar(&req.DiskGiB, "disk-gib", 0, "data disk size in GiB; the default template's when omitted")
 	noWait := fs.Bool("no-wait", false, "return once the operation is accepted")
 	rest, err := parse(fs, args)
 	if err != nil || len(rest) != 1 {

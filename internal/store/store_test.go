@@ -1,7 +1,10 @@
 package store
 
 import (
+	"database/sql"
+	"io/fs"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -16,7 +19,7 @@ func TestOpenAppliesMigrationsOnce(t *testing.T) {
 		if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
 			t.Fatal(err)
 		}
-		if applied != 12 {
+		if applied != 13 {
 			t.Fatalf("open %d: %d migrations recorded", i, applied)
 		}
 		var mode string
@@ -27,5 +30,63 @@ func TestOpenAppliesMigrationsOnce(t *testing.T) {
 			t.Fatalf("journal mode = %s", mode)
 		}
 		db.Close()
+	}
+}
+
+func TestTemplatesMigrationKeepsSavedDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "boxface.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if name >= "migrations/0013" {
+			break
+		}
+		body, err := migrations.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO owners (id, name, created_at) VALUES ('o1', 'owner', '2026-10-01T00:00:00Z')`,
+		`INSERT INTO owner_defaults (owner_id, image, vcpus, memory_mib, disk_gib, profile, updated_at) VALUES ('o1', 'next', 4, 8192, 40, 'tools', '2026-10-02T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var name, image, profile string
+	var vcpus, memory, disk int
+	if err := db.QueryRow(`SELECT name, image, profile, vcpus, memory_mib, disk_gib FROM templates WHERE owner_id = 'o1'`).
+		Scan(&name, &image, &profile, &vcpus, &memory, &disk); err != nil {
+		t.Fatal(err)
+	}
+	if name != "default" || image != "next" || profile != "tools" || vcpus != 4 || memory != 8192 || disk != 40 {
+		t.Fatalf("template = %s %s %s %d %d %d", name, image, profile, vcpus, memory, disk)
+	}
+	if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE name = 'owner_defaults'`).Scan(&name); err != sql.ErrNoRows {
+		t.Fatalf("owner_defaults still exists: %v", err)
 	}
 }

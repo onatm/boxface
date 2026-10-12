@@ -89,8 +89,9 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /v1/images", s.listImages)
 	authed("GET /v1/image-imports", s.listStaged)
 	authed("PUT /v1/image-aliases/{name}", s.setImageAlias)
-	authed("GET /v1/defaults", s.getDefaults)
-	authed("PUT /v1/defaults", s.setDefaults)
+	authed("GET /v1/templates", s.listTemplates)
+	authed("GET /v1/templates/{name}", s.getTemplate)
+	authed("PUT /v1/templates/{name}", s.setTemplate)
 	authed("GET /v1/ssh-keys", s.listSSHKeys)
 	authed("POST /v1/ssh-keys", s.addSSHKey)
 	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
@@ -306,34 +307,36 @@ func (s *Server) setImageAlias(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"name": r.PathValue("name"), "image_id": req.ImageID})
 }
 
-func (s *Server) getDefaults(w http.ResponseWriter, r *http.Request) {
-	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Lifecycle.Templates(r.Context(), owner(r))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	saved, err := s.Lifecycle.DefaultsSaved(r.Context(), owner(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		lifecycle.Defaults
-		Saved bool `json:"saved"`
-	}{d, saved})
+	writeJSON(w, http.StatusOK, map[string]any{"templates": list})
 }
 
-func (s *Server) setDefaults(w http.ResponseWriter, r *http.Request) {
-	var d lifecycle.Defaults
-	if err := decode(w, r, &d); err != nil {
+func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request) {
+	t, err := s.Lifecycle.Template(r.Context(), owner(r), r.PathValue("name"))
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := s.Lifecycle.SetDefaults(r.Context(), owner(r), d); err != nil {
+	writeJSON(w, http.StatusOK, t)
+}
+
+func (s *Server) setTemplate(w http.ResponseWriter, r *http.Request) {
+	var t lifecycle.Template
+	if err := decode(w, r, &t); err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, d)
+	t, err := s.Lifecycle.SetTemplate(r.Context(), owner(r), r.PathValue("name"), t)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
 
 func (s *Server) listSSHKeys(w http.ResponseWriter, r *http.Request) {
@@ -439,7 +442,7 @@ func (s *Server) removeImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
-	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+	d, err := s.Lifecycle.Template(r.Context(), owner(r), lifecycle.DefaultTemplate)
 	if err != nil {
 		writeError(w, err)
 		return
