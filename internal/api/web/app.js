@@ -193,19 +193,25 @@ function refreshIn(ms, fn) {
   refreshTimer = setTimeout(() => fn().catch((err) => { if (err.status !== 401) fail(err); }), ms);
 }
 
+const renamed = { setup: "overview", defaults: "template", clients: "devices", keys: "devices" };
+
 async function route() {
   if (!session || !session.signed_in) return;
   clearTimeout(refreshTimer);
-  const [name, arg] = (location.hash || "#setup").slice(1).split("/");
-  const view = views[name] || views.setup;
-  const section = name === "profile" ? "profiles" : name;
+  const parts = (location.hash || "#overview").slice(1).split("/");
+  const name = renamed[parts[0]] || parts[0];
+  const view = views[name] || views.overview;
+  const section = name === "profile" ? "profiles" : views[name] ? name : "overview";
   for (const a of document.querySelectorAll("#nav a")) {
-    if (a.getAttribute("href") === "#" + section) a.setAttribute("aria-current", "page");
+    if (a.getAttribute("href") === "#" + section) {
+      a.setAttribute("aria-current", "page");
+      a.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
     else a.removeAttribute("aria-current");
   }
   status("");
   try {
-    await view(arg);
+    await view(parts[1]);
   } catch (err) {
     if (err.status !== 401) fail(err);
   }
@@ -216,29 +222,46 @@ function mainImageID(images) {
   return img ? img.id : null;
 }
 
-views.setup = async () => {
-  const [keys, images, defaults, devices, profiles] = await Promise.all([
-    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/templates/default"), api("GET", "/v1/devices"), api("GET", "/v1/profiles"),
+function templateImageReady(t, images) {
+  if (t.image === "main") return mainImageID(images) !== null;
+  return images.some((i) => i.status === "ready" && (i.id === t.image || (i.aliases || []).includes(t.image)));
+}
+
+views.overview = async () => {
+  const [images, template, devices, profiles, envs, storage] = await Promise.all([
+    api("GET", "/v1/images"), api("GET", "/v1/templates/default"), api("GET", "/v1/devices"), api("GET", "/v1/profiles"),
+    api("GET", "/v1/environments"), api("GET", "/v1/storage"),
   ]);
-  const defaultProfile = profiles.profiles.find((p) => p.name === (defaults.profile || "main"));
+  const profile = profiles.profiles.find((p) => p.name === template.profile);
   const steps = [
-    [keys.ssh_keys.length > 0, "Add an SSH key", "The keys new environments accept. boxfacectl login registers its own device key too.", "#keys"],
-    [mainImageID(images.images) !== null, "Register an image and mark it main", "New environments use the main image unless told otherwise.", "#images"],
-    [!!defaultProfile && defaultProfile.latest.state === "ready", `Build the ${defaults.profile || "main"} profile`, "The tools every new environment gets, built from Nix packages.", defaultProfile ? `#profile/${defaultProfile.id}` : "#profile/new"],
-    [defaults.saved, "Review default sizes", "vCPUs, memory, and disk for boxfacectl create NAME.", "#defaults"],
-    [devices.devices.length > 0, "Log in from the CLI", "Issue a one-time code for each device.", "#clients"],
+    [templateImageReady(template, images.images), `Register a base image as ${template.image}`, "The system layer: Debian, Docker, and SSH. Build it with images/image.sh on the host.", "#images"],
+    [!!profile && profile.latest.state === "ready", `Build the ${template.profile} profile`, "Your tools and dotfiles, built from Nix packages.", profile ? `#profile/${profile.id}` : "#profile/new"],
+    [template.saved, "Review the default template", "The base image, profile, and size boxfacectl create NAME uses.", "#template"],
+    [devices.devices.some((d) => d.ssh_keys.length > 0), "Log in from a device", "boxfacectl login registers the device and its SSH key.", "#devices"],
   ];
-  const done = steps.every((s) => s[0]);
+  if (!steps.every((s) => s[0])) {
+    render(
+      h("h1", {}, "Overview"),
+      h("p", { class: "lead" }, "Finish these steps, then create and connect from boxfacectl."),
+      h("div", { class: "card" }, h("ul", { class: "checklist" }, steps.map(([ok, title, detail, href]) =>
+        h("li", {},
+          h("span", { class: "mark" + (ok ? " done" : ""), "aria-hidden": "true" }, ok ? "✓" : ""),
+          h("div", {},
+            h("a", { href }, title), h("span", { class: "visually-hidden" }, ok ? " (done)" : " (to do)"),
+            h("p", { class: "hint" }, detail)))))));
+    return;
+  }
+  const live = envs.environments.filter((e) => e.observed_state !== "deleted");
+  const count = (state) => live.filter((e) => e.observed_state === state).length;
+  const low = storage.free_bytes < 10 * 2 ** 30;
   render(
-    h("h1", {}, "Setup"),
-    h("p", { class: "lead" }, done ? "This server is ready. From a client:" : "Finish these steps, then provision and connect from boxfacectl."),
-    done ? h("div", {}, command(`boxfacectl login ${serverURL()}`), command("boxfacectl create travel"), command("boxfacectl connect travel")) : null,
-    h("div", { class: "card" }, h("ul", { class: "checklist" }, steps.map(([ok, title, detail, href]) =>
-      h("li", {},
-        h("span", { class: "mark" + (ok ? " done" : ""), "aria-hidden": "true" }, ok ? "✓" : ""),
-        h("div", {},
-          h("a", { href }, title), h("span", { class: "visually-hidden" }, ok ? " (done)" : " (to do)"),
-          h("p", { class: "hint" }, detail)))))));
+    h("h1", {}, "Overview"),
+    h("p", { class: "lead" }, "This server is ready. From a client:"),
+    command(`boxfacectl login ${serverURL()}`), command("boxfacectl create travel"), command("boxfacectl connect travel"),
+    h("h2", {}, h("a", { href: "#environments" }, "Environments")),
+    h("p", {}, live.length === 0 ? "None yet." : `${count("running")} running · ${count("stopped")} stopped${count("error") ? ` · ${count("error")} with errors` : ""}`),
+    h("h2", {}, h("a", { href: "#host" }, "Host")),
+    h("p", {}, `${gib(storage.free_bytes)} free of ${gib(storage.total_bytes)}`, low ? [" ", h("span", { class: "badge warn" }, "low: builds need 10 GiB")] : null));
 };
 
 function gib(bytes) {
@@ -251,7 +274,7 @@ function storageCard(st) {
     if (!confirm("Clear your Nix build cache? The next profile build downloads everything again.")) return;
     await api("DELETE", "/v1/storage/build-cache");
     status("Build cache cleared.", "ok");
-    await views.images();
+    await views.host();
   }));
   const low = st.free_bytes < 10 * 2 ** 30;
   return h("div", { class: "card" },
@@ -262,7 +285,7 @@ function storageCard(st) {
 }
 
 views.images = async () => {
-  const [staged, images, storage] = await Promise.all([api("GET", "/v1/image-imports"), api("GET", "/v1/images"), api("GET", "/v1/storage")]);
+  const [staged, images] = await Promise.all([api("GET", "/v1/image-imports"), api("GET", "/v1/images")]);
   const stagedList = staged.staged.length === 0
     ? h("p", { class: "muted" }, "Nothing staged. Copy vmlinux and rootfs.ext4 into a directory under /var/lib/boxface/import/ on the host.")
     : h("div", { class: "table-wrap" }, h("table", {},
@@ -314,72 +337,56 @@ views.images = async () => {
       }))));
   render(
     h("h1", {}, "Images"),
-    h("p", { class: "lead" }, "The main image is what new environments use. Moving it never changes existing environments."),
+    h("p", { class: "lead" }, "Base images: the read-only system layer under every environment. The default template uses main unless you change it; moving main never changes existing environments."),
     h("h2", {}, "Staged on the host"), stagedList,
     h("h2", {}, "Registered"), registered,
-    h("h2", {}, "Storage"), storageCard(storage));
+    h("p", { class: "hint" }, "Disk space is on the ", h("a", { href: "#host" }, "Host"), " page."));
 };
 
-views.defaults = async () => {
-  const [d, caps, images] = await Promise.all([api("GET", "/v1/templates/default"), api("GET", "/v1/capabilities"), api("GET", "/v1/images")]);
+views.host = async () => {
+  const [storage, caps] = await Promise.all([api("GET", "/v1/storage"), api("GET", "/v1/capabilities")]);
+  const limit = (v, unit) => (v > 0 ? `${v}${unit}` : "no limit");
+  const c = caps.capacity;
+  render(
+    h("h1", {}, "Host"),
+    h("p", { class: "lead" }, "What this server has left, and the limits it enforces."),
+    h("h2", {}, "Storage"), storageCard(storage),
+    h("h2", {}, "Limits"),
+    h("p", {}, `Environments: ${limit(c.environments, "")} · vCPUs: ${limit(c.vcpus, "")} · Memory: ${limit(c.memory_mib, " MiB")} · Disk: ${limit(c.disk_gib, " GiB")}`),
+    h("p", { class: "hint" }, "Change them with boxface-api serve flags in a systemctl edit boxface-api override."),
+    h("h2", {}, "Server"),
+    h("p", {}, `Boxface ${caps.version} · ${caps.architecture} · ${caps.hypervisor}`));
+};
+
+views.template = async () => {
+  const [t, images] = await Promise.all([api("GET", "/v1/templates/default"), api("GET", "/v1/images")]);
   const imageOptions = new Set(["main"]);
   for (const img of images.images) for (const a of img.aliases || []) imageOptions.add(a);
   const field = (label, name, value, extra) => {
     const input = h("input", Object.assign({ id: name, name, value: String(value) }, extra));
     return [input, h("label", { for: name }, label, input)];
   };
-  const [image, imageLabel] = field("Image (alias or ID)", "image", d.image, { list: "image-options", required: true });
-  const [profile, profileLabel] = field("Profile", "profile", d.profile || "main", { required: true });
-  const [vcpus, vcpusLabel] = field("vCPUs", "vcpus", d.vcpus, { type: "number", min: 1, required: true });
-  const [memory, memoryLabel] = field("Memory (MiB)", "memory", d.memory_mib, { type: "number", min: 128, step: 128, required: true });
-  const [disk, diskLabel] = field("Disk (GiB)", "disk", d.disk_gib, { type: "number", min: 1, required: true });
-  const save = h("button", { class: "primary", type: "submit" }, "Save defaults");
+  const [image, imageLabel] = field("Base image (alias or ID)", "image", t.image, { list: "image-options", required: true });
+  const [profile, profileLabel] = field("Profile", "profile", t.profile, { required: true });
+  const [vcpus, vcpusLabel] = field("vCPUs", "vcpus", t.vcpus, { type: "number", min: 1, required: true });
+  const [memory, memoryLabel] = field("Memory (MiB)", "memory", t.memory_mib, { type: "number", min: 128, step: 128, required: true });
+  const [disk, diskLabel] = field("Disk (GiB)", "disk", t.disk_gib, { type: "number", min: 1, required: true });
+  const save = h("button", { class: "primary", type: "submit" }, "Save template");
   const form = h("form", { class: "stack" },
     imageLabel, h("datalist", { id: "image-options" }, [...imageOptions].map((o) => h("option", { value: o }))),
     profileLabel,
     h("div", { class: "row" }, vcpusLabel, memoryLabel, diskLabel), h("div", {}, save));
   form.addEventListener("submit", busy(save, "Saving…", async () => {
     await api("PUT", "/v1/templates/default", { image: image.value.trim(), profile: profile.value.trim(), vcpus: +vcpus.value, memory_mib: +memory.value, disk_gib: +disk.value });
-    await views.defaults();
-    status("Defaults saved. They apply to environments created from now on.", "ok");
+    await views.template();
+    status("Template saved. It applies to environments created from now on.", "ok");
   }));
-  const limit = (v, unit) => (v > 0 ? `${v}${unit}` : "no limit");
-  const c = caps.capacity;
   render(
-    h("h1", {}, "Defaults"),
-    h("p", { class: "lead" }, "What boxfacectl create NAME uses when no flags are given."),
-    d.saved ? null : h("p", { class: "hint" }, "These are the built-in defaults; nothing has been saved yet."),
+    h("h1", {}, "Default template"),
+    h("p", { class: "lead" }, "What boxfacectl create NAME builds from. Flags such as --vcpus or --profile override a field for one environment."),
+    t.saved ? null : h("p", { class: "hint" }, "These are the built-in values; nothing has been saved yet."),
     h("div", { class: "card" }, form),
-    h("h2", {}, "Host limits"),
-    h("p", { class: "muted" }, `Environments: ${limit(c.environments, "")} · vCPUs: ${limit(c.vcpus, "")} · Memory: ${limit(c.memory_mib, " MiB")} · Disk: ${limit(c.disk_gib, " GiB")}`));
-};
-
-views.keys = async () => {
-  const keys = await api("GET", "/v1/ssh-keys");
-  const name = h("input", { id: "key-name", name: "name", required: true, maxlength: 64, placeholder: "laptop" });
-  const key = h("textarea", { id: "key-value", name: "public_key", required: true, spellcheck: "false", placeholder: "ssh-ed25519 AAAA… you@laptop" });
-  const add = h("button", { class: "primary", type: "submit" }, "Add key");
-  const form = h("form", { class: "stack" }, h("label", { for: "key-name" }, "Name", name), h("label", { for: "key-value" }, "Public key", key), h("div", {}, add));
-  form.addEventListener("submit", busy(add, "Adding…", async () => {
-    const k = await api("POST", "/v1/ssh-keys", { name: name.value.trim(), public_key: key.value.trim() });
-    status(`Added ${k.fingerprint}.`, "ok");
-    await views.keys();
-  }));
-  render(
-    h("h1", {}, "SSH keys"),
-    h("p", { class: "lead" }, "Environments accept these keys from their next start. Removing a key takes effect when an environment next starts."),
-    keys.ssh_keys.length === 0 ? h("p", { class: "muted" }, "No keys yet.") : h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Fingerprint"), h("th", { class: "optional" }, "Added"), h("th", {}, ""))),
-      h("tbody", {}, keys.ssh_keys.map((k) => {
-        const rm = h("button", { type: "button", class: "danger" }, "Remove");
-        rm.addEventListener("click", busy(rm, "Removing…", async () => {
-          if (!confirm(`Remove the key ${k.name}? Environments stop accepting it at their next start.`)) return;
-          await api("DELETE", `/v1/ssh-keys/${encodeURIComponent(k.id)}`);
-          await views.keys();
-        }));
-        return h("tr", {}, h("td", {}, k.name), h("td", { class: "mono" }, k.fingerprint), h("td", { class: "optional" }, when(k.created_at)), h("td", { class: "actions" }, rm));
-      })))),
-    h("h2", {}, "Add a key"), h("div", { class: "card" }, form));
+    h("p", { class: "hint" }, "Server limits are on the ", h("a", { href: "#host" }, "Host"), " page."));
 };
 
 const presets = [
@@ -481,8 +488,8 @@ views.credentials = async () => {
     h("p", { class: "hint" }, "Commands get the current value each time they start, in shells opened after it was saved. ChatGPT subscription sign-ins for Codex, OpenCode, and Pi cannot be shared between environments; sign in inside each environment instead."));
 };
 
-views.clients = async () => {
-  const [devices, identities] = await Promise.all([api("GET", "/v1/devices"), api("GET", "/v1/identities")]);
+views.devices = async () => {
+  const [devices, keys, identities] = await Promise.all([api("GET", "/v1/devices"), api("GET", "/v1/ssh-keys"), api("GET", "/v1/identities")]);
   const issued = h("div", {});
   const issue = h("button", { class: "primary", type: "button" }, "Create a login code");
   issue.addEventListener("click", busy(issue, "Creating…", async () => {
@@ -490,6 +497,17 @@ views.clients = async () => {
     issued.replaceChildren(
       h("p", {}, "Run this on the device. The code works once and expires ", when(c.expires_at), "."),
       command(`boxfacectl login ${serverURL()} --code ${c.code}`));
+  }));
+
+  const other = keys.ssh_keys.filter((k) => !k.device_id);
+  const name = h("input", { id: "key-name", name: "name", required: true, maxlength: 64, placeholder: "laptop" });
+  const key = h("textarea", { id: "key-value", name: "public_key", required: true, spellcheck: "false", placeholder: "ssh-ed25519 AAAA… you@laptop" });
+  const add = h("button", { class: "primary", type: "submit" }, "Add key");
+  const form = h("form", { class: "stack" }, h("label", { for: "key-name" }, "Name", name), h("label", { for: "key-value" }, "Public key", key), h("div", {}, add));
+  form.addEventListener("submit", busy(add, "Adding…", async () => {
+    const k = await api("POST", "/v1/ssh-keys", { name: name.value.trim(), public_key: key.value.trim() });
+    status(`Added ${k.fingerprint}. Environments accept it from their next start.`, "ok");
+    await views.devices();
   }));
 
   const ident = session.identity;
@@ -500,13 +518,13 @@ views.clients = async () => {
       await api("POST", "/v1/identities", { provider: ident.provider });
       session = await api("GET", "/web/session");
       status(`${ident.subject} can now sign in without a code through Tailscale.`, "ok");
-      await views.clients();
+      await views.devices();
     }));
   }
 
   render(
-    h("h1", {}, "Clients"),
-    h("p", { class: "lead" }, "Devices logged in to this server, and how new ones log in."),
+    h("h1", {}, "Devices"),
+    h("p", { class: "lead" }, "Who can use this server and reach its environments. Key changes take effect when an environment next starts."),
     h("h2", {}, "Log in a device"),
     h("div", { class: "card" }, issue, issued),
     h("h2", {}, "Logged-in devices"),
@@ -518,12 +536,26 @@ views.clients = async () => {
           const keys = d.ssh_keys.length ? " Its SSH key is removed too; environments stop accepting it at their next start." : "";
           if (!confirm(`Revoke ${d.name}? That device must log in again.${keys}`)) return;
           await api("DELETE", `/v1/devices/${encodeURIComponent(d.id)}`);
-          await views.clients();
+          await views.devices();
         }));
         return h("tr", {}, h("td", {}, d.name),
           h("td", { class: "mono" }, d.ssh_keys.length ? d.ssh_keys.map((k) => k.fingerprint).join(", ") : h("span", { class: "muted" }, "none")),
           h("td", { class: "optional" }, when(d.created_at)), h("td", {}, when(d.last_used_at)), h("td", { class: "actions" }, revoke));
       })))),
+    h("h2", {}, "Other SSH keys"),
+    h("p", { class: "muted" }, "Keys added here belong to no device, so revoking a device never removes them."),
+    other.length === 0 ? null : h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", {}, "Fingerprint"), h("th", { class: "optional" }, "Added"), h("th", {}, ""))),
+      h("tbody", {}, other.map((k) => {
+        const rm = h("button", { type: "button", class: "danger" }, "Remove");
+        rm.addEventListener("click", busy(rm, "Removing…", async () => {
+          if (!confirm(`Remove the key ${k.name}? Environments stop accepting it at their next start.`)) return;
+          await api("DELETE", `/v1/ssh-keys/${encodeURIComponent(k.id)}`);
+          await views.devices();
+        }));
+        return h("tr", {}, h("td", {}, k.name), h("td", { class: "mono" }, k.fingerprint), h("td", { class: "optional" }, when(k.created_at)), h("td", { class: "actions" }, rm));
+      })))),
+    h("div", { class: "card" }, form),
     h("h2", {}, "Tailscale sign-in"),
     h("p", { class: "muted" }, "Optional. A bound Tailscale login signs in to this page and to boxfacectl login without a code, but only through tailscale serve."),
     identities.identities.length === 0 ? null : h("div", { class: "table-wrap" }, h("table", {},
@@ -533,7 +565,7 @@ views.clients = async () => {
           if (!confirm(`Unbind ${i.subject}? Devices already logged in stay logged in until revoked.`)) return;
           await api("DELETE", `/v1/identities/${encodeURIComponent(i.id)}`);
           session = await api("GET", "/web/session");
-          await views.clients();
+          await views.devices();
         }));
         return h("tr", {}, h("td", {}, h("span", { class: "badge" }, i.provider), " ", i.subject), h("td", { class: "optional" }, when(i.created_at)), h("td", { class: "actions" }, unbind));
       })))),
@@ -554,16 +586,16 @@ views.profiles = async () => {
   const rows = data.profiles.map((p) => {
     const actions = [h("a", { href: `#profile/${p.id}` }, "Edit")];
     if (p.name !== def) {
-      const make = h("button", { type: "button" }, "Make default");
+      const make = h("button", { type: "button" }, "Use in template");
       make.addEventListener("click", busy(make, "Saving…", async () => {
         await api("PUT", "/v1/templates/default", { image: defaults.image, profile: p.name, vcpus: defaults.vcpus, memory_mib: defaults.memory_mib, disk_gib: defaults.disk_gib });
-        status(`New environments now use ${p.name}.`, "ok");
+        status(`The default template now uses ${p.name}.`, "ok");
         await views.profiles();
       }));
       actions.push(" ", make);
     }
     return h("tr", {},
-      h("td", {}, h("a", { href: `#profile/${p.id}` }, p.name), p.name === def ? [" ", h("span", { class: "badge main" }, "default")] : null),
+      h("td", {}, h("a", { href: `#profile/${p.id}` }, p.name), p.name === def ? [" ", h("span", { class: "badge main" }, "in template")] : null),
       h("td", {}, `#${p.latest.number} `, stateBadge(p.latest.state)),
       h("td", { class: "optional" }, p.latest.spec.module ? "Home Manager module" : `${(p.latest.spec.packages || []).length} packages`),
       h("td", { class: "optional" }, when(p.latest.updated_at)),
@@ -571,7 +603,7 @@ views.profiles = async () => {
   });
   render(
     h("h1", {}, "Profiles"),
-    h("p", { class: "lead" }, "The tools your environments get, built from Nix packages in an isolated builder. New environments use the default profile; existing ones keep the revision they were created with."),
+    h("p", { class: "lead" }, "Your tools and dotfiles: the user layer of the baseline, built from Nix packages in an isolated builder. New environments use the default template's profile; existing ones keep the revision they were created with."),
     h("p", {}, h("a", { href: "#profile/new", class: "button-link" }, "New profile")),
     data.profiles.length === 0 ? h("p", { class: "muted" }, "No profiles yet.") : h("div", { class: "table-wrap" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", {}, "Profile"), h("th", {}, "Latest revision"), h("th", { class: "optional" }, "Contents"), h("th", { class: "optional" }, "Updated"), h("th", {}, ""))),

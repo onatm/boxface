@@ -14,7 +14,7 @@ Each environment has a read-only managed baseline (Debian, rootless Docker, and 
 - **Isolated guests.** Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet. Only the host worker performs privileged operations.
 - **Versioned toolsets.** Profiles are built from Nix packages or a Home Manager module in an isolated builder VM and attached read-only, so the baseline stays fixed while your data persists.
 - **Agent credentials.** Store tokens once, encrypted with a local key or a KMS, and deliver them at run time only to the commands you name.
-- **Web UI.** Setup checklist, images, profiles, defaults, SSH keys, client logins, credentials, disk usage, and environments.
+- **Web UI.** Grouped into Environments (environments, the default template, credentials), Baseline (images, profiles), Access (devices and their SSH keys), and Host (disk, limits), with an overview that walks you through setup.
 - **Private or public access.** Reach the API through Tailscale Serve, public TLS with Let's Encrypt, or an SSH tunnel.
 
 Boxface 0.1.0 targets a single owner on one KVM host. Image builds through the API, backups, upgrades, and environment actions in the web UI are planned; see the [Roadmap](docs/ROADMAP.md) and the [Changelog](CHANGELOG.md).
@@ -123,7 +123,7 @@ Run these as root on the host.
    chown -R boxface:boxface /var/lib/boxface/import/base
    ```
 
-3. Expose the API (next section), then open the setup URL. The setup page walks through registering the staged image as `main`, adding an SSH key, reviewing default sizes, and creating a login code for each client device.
+3. Expose the API (next section), then open the setup URL. The Overview page walks through registering the staged image as `main`, building a profile, reviewing the default template, and logging in each client device with a code from the Devices page, which also registers the device's SSH key.
 
 ## Expose the API
 
@@ -149,7 +149,7 @@ Clients use `https://<host>.<tailnet>.ts.net`. To log in from your tailnet devic
 runuser -u boxface -- boxface-api bootstrap -owner <your-name> -tailscale-login <you@github>
 ```
 
-`boxfacectl login https://<host>.<tailnet>.ts.net` and the web UI then sign in with no code. You can also bind your login from the web UI's Clients page when you open it through Tailscale. Only the Tailscale socket honours the login, and tagged devices still need a code.
+`boxfacectl login https://<host>.<tailnet>.ts.net` and the web UI then sign in with no code. You can also bind your login from the web UI's Devices page when you open it through Tailscale. Only the Tailscale socket honours the login, and tagged devices still need a code.
 
 **A public address**, with a Let's Encrypt certificate for a domain that resolves to the host and port 443 open:
 
@@ -172,9 +172,9 @@ After 10 failed logins from one address, that address can't log in until 10 minu
 
 ## Use
 
-The web UI at the API's address (`/`) is for configuration: images, default sizes, SSH keys, client logins, and a read-only list of environments with their `connect` commands. `boxfacectl` provisions and connects.
+The web UI at the API's address (`/`) is for configuration: the default template, credentials, images, profiles, devices and SSH keys, host disk and limits, and a read-only list of environments with their `connect` commands. `boxfacectl` provisions and connects.
 
-Log in with a code from the web UI's Clients page:
+Log in with a code from the web UI's Devices page:
 
 ```sh
 boxfacectl login https://<host>.<tailnet>.ts.net          # or https://boxface.example.com, or http://127.0.0.1:7443 over a tunnel
@@ -267,7 +267,7 @@ runuser -u boxface -- boxface-api secrets rekey -from file:///var/lib/boxface/ap
 - **If a start fails,** the environment is left `stopped` with the error. Its disk is kept.
 - **Limits:** the API allows at most 4 environments by default. Change this by overriding the service command (`systemctl edit boxface-api`) to pass `-max-environments`, `-max-vcpus`, `-max-memory-mib`, or `-max-disk-gib`.
 - **Deleted environments** with a kept disk stay listed until purged.
-- **Tokens:** `runuser -u boxface -- boxface-api revoke -owner <your-name>` revokes all of your tokens and removes the SSH keys those devices registered. To revoke one device, use the web UI's Clients page.
+- **Tokens:** `runuser -u boxface -- boxface-api revoke -owner <your-name>` revokes all of your tokens and removes the SSH keys those devices registered. To revoke one device, use the web UI's Devices page.
 
 ## Operate the host
 

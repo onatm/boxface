@@ -70,6 +70,9 @@ body {
   text-decoration: none;
 }
 
+.nav { align-items: center; }
+.nav-group { display: flex; flex: none; align-items: center; gap: 0.25rem; margin-left: 0.25rem; padding-left: 0.5rem; border-left: 1px solid var(--border); }
+.nav-label { flex: none; padding: 0 0.25rem; font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .nav a:hover { color: var(--text); }
 .nav a[aria-current="page"] { background: var(--code); color: var(--text); font-weight: 600; }
 
