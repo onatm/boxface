@@ -94,6 +94,9 @@ func run(socket, apiUser string, cfg worker.Config) error {
 		srv.Shutdown(shutdown)
 	}()
 	slog.Info("boxface-worker listening", "socket", socket, "api_uid", apiUID)
+	if err := notifyReady(); err != nil {
+		slog.Warn("notify systemd of readiness", "error", err)
+	}
 	err = srv.Serve(worker.PeerListener{Listener: l, Allow: func(uid uint32) bool { return uid == 0 || uid == uint32(apiUID) }})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil

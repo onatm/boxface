@@ -4,6 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=notify
 ExecStart=/usr/local/bin/boxface-worker
 Restart=on-failure
 

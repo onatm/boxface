@@ -1,6 +1,6 @@
 # Durable Server Lifecycle
 
-**Status:** In progress — decisions confirmed 2026-10-09
+**Status:** M0–M6 complete on the test droplet ([results](../research/2026-10-lifecycle.md)); ThinkCentre repeat pending
 
 **Roadmap:** [Durable server lifecycle](../ROADMAP.md#durable-server-lifecycle)
 
