@@ -81,6 +81,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
+- **Committed initiatives:** [Configuration Model](./plans/2026-10-configuration-model.md), before 0.1.0.
 - **Candidate bets:** A built-in secret store for credentials so environments need no per-environment sign-in ([Agent Credential Store](./plans/2026-10-secret-store.md), done), the rest of the [Web UI](./designs/web-ui.md), user profiles built in an isolated builder VM and delivered as their own drive ([User Profiles and Builds](./plans/2026-10-profiles.md), done 2026-10-11, including Home Manager generated files and session variables), explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
@@ -187,7 +188,8 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
 | 2026-10-10 | Connect plan C0–C7 done; daily terminal workflow stays in Now for agent credentials; keys now apply at each start | [Connect results](./research/2026-10-connect.md) | onatm |
 | 2026-10-10 | Validated subscription sign-in for all four agents inside environments; decided built-in secret storage with Go CDK `secrets`, OpenBao and 1Password as later providers; daily terminal workflow waits on a tablet run | [Agent authentication](./research/2026-10-agent-auth.md); owner decision | onatm |
-| 2026-10-12 | Released 0.1.0: lifecycle, connect, configuration web UI, profiles, and the credential store, with CI and a tag-driven release workflow | Owner decision to release what is built; stages and their exit criteria are unchanged ([Changelog](../CHANGELOG.md)) | onatm |
+| 2026-10-12 | Prepared 0.1.0: lifecycle, connect, configuration web UI, profiles, and the credential store, with CI and a tag-driven release workflow; image builds moved to `images/` with a checked image contract | Owner decision to release what is built; stages and their exit criteria are unchanged ([Changelog](../CHANGELOG.md)) | onatm |
+| 2026-10-12 | 0.1.0 waits for the [Configuration Model](./plans/2026-10-configuration-model.md) plan: grouped configuration, the `default` template, Devices, and dotfiles rendered in the builder | API and CLI names become a contract at the first release; owner decision | onatm |
 
 ## Linked Documents
 
