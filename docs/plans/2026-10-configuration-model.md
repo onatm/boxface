@@ -34,7 +34,7 @@ An owner can tell what each configuration page is for, where to change something
 | Tailscale | The bound Tailscale login moves to the Devices page, under "Sign-in" | It is a way to get in, like a device |
 | Host | Disk usage, build cache, capacity limits, and version on one Host page | Server state, not configuration |
 | Overview | The Setup checklist until it is complete, then an environment summary and host health | The first page stays useful after setup |
-| Dotfiles | chezmoi runs in the builder VM, not the guest ([option B](#dotfiles-in-the-builder)) | Executable input stays in the isolated builder, the result is recorded, and chezmoi leaves the image and profile requirements |
+| Dotfiles | chezmoi runs in the builder VM, not the guest ([option B](#dotfiles-in-the-builder)) | Rendering executes the dotfiles' templates and `modify_` scripts ([M0](../research/2026-10-dotfiles-render.md)), so it stays in the isolated builder; the result is recorded, and chezmoi leaves the image and profile requirements |
 | Release | Every rename lands before 0.1.0 is tagged | API paths and CLI flags become a contract at the first release |
 
 ### API
@@ -60,13 +60,13 @@ The profile build renders the dotfiles once, in the builder VM, into a plain fil
 
 | Part | Change |
 |---|---|
-| Builder | After cloning, run chezmoi (pinned with the builder's Nix) to render the target state into `boxface/home/` on the profile drive, plus a manifest of each file's path, mode, and digest. Scripts (`run_` files and hooks) are excluded. A template that calls a password manager or other credential source fails the build with a message pointing to Credentials |
+| Builder | After cloning, run `chezmoi archive --exclude=scripts,encrypted` (pinned with the builder's Nix) as UID 1000 `dev`, with `HOME=/home/dev` and hostname `boxface`, so templates see what the guest would, and unpack it into `boxface/home/` on the profile drive. Write a manifest of each file's path, mode, and digest, marking `create_` and `modify_` entries from `chezmoi managed --path-style=source-relative`. `run_` scripts are left out; excluded encrypted files are listed in the build log. A template that calls a password manager fails the build with chezmoi's error and a line pointing to Credentials |
 | Profile spec | `chezmoi` leaves the required packages (`git` and `tmux` stay); a profile can still include it for interactive use |
 | Guest | A small seeder replaces `boxface-personalise`: on the first boot of a data disk it copies `boxface/home/` into the home, skipping files that already exist, and records the profile revision and manifest under `~/.local/state/boxface/` |
 | Image contract | Unchanged, except that the image no longer needs a profile with chezmoi |
 | Updates | Existing environments keep their profile revision; updates are explicit, as for images. Because each revision's rendered tree and manifest are kept, a later "update profile" action can merge three ways (the previous rendered file, the new rendered file, and the user's current file): files the user did not change are updated and changed files are reported as conflicts. The update action itself belongs to [Data Lifecycle](../designs/data-lifecycle.md) and is out of scope here |
 
-Trade-offs accepted: templates see the builder's hostname and OS, not the environment's; chezmoi externals download at build time and are recorded only by the build log; chezmoi scripts do not run at all.
+Trade-offs accepted: templates and `modify_` scripts run in the builder, never in the guest; templates see the fixed hostname `boxface`, not the environment's name; `create_` files are seeded once and never updated; externals download at build time and are recorded only by the build log; `run_` scripts and encrypted files are not applied.
 
 ## Scope
 
@@ -78,7 +78,7 @@ Trade-offs accepted: templates see the builder's hostname and OS, not the enviro
 
 | Step | Work | Verify |
 |---|---|---|
-| M0. Spike | Run `chezmoi archive` or `chezmoi apply --destination` against a chezmoi repository with templates, a `run_` script, an external, and a password-manager template, and against a plain repository whose files start with `.` | Recorded in `docs/research/`: what each produces, how scripts are excluded, how a credential template fails, and what a plain repository yields |
+| M0. Spike *(done, [results](../research/2026-10-dotfiles-render.md))* | Run `chezmoi archive` or `chezmoi apply --destination` against a chezmoi repository with templates, a `run_` script, an external, and a password-manager template, and against a plain repository whose files start with `.` | Recorded in `docs/research/`: what each produces, how scripts are excluded, how a credential template fails, and what a plain repository yields |
 | M1. Templates | Migration; `GET /v1/templates`, `GET`/`PUT /v1/templates/default`; `create` reads the `default` template; `/v1/defaults` removed | Tests: an existing `owner_defaults` row becomes `default`; `create` without flags uses it; flags still override it |
 | M2. Devices | Migration with `token_id` and backfill; keys added with a device token are linked; `GET`/`DELETE /v1/devices`; `/v1/tokens` removed | Tests: login links the device key; revoking a device revokes the token and deletes its keys; a hand-added key survives every revocation; another owner's device cannot be revoked; the backfill links only same-owner, same-name pairs |
 | M3. Web UI | Grouped navigation; Overview, Template, Devices, and Host pages; Images and Profiles under Baseline; the checklist asks for the template's image and profile instead of two `main`s | Every page reachable from the navigation at phone width; no page shows host state except Host and Overview; the Web UI design doc's page list matches |
@@ -87,4 +87,4 @@ Trade-offs accepted: templates see the builder's hostname and OS, not the enviro
 
 ## Open Questions
 
-- What a plain dotfiles repository (files named `.bashrc`, not `dot_bashrc`) should do: copy it as it is, or fail the build with a message. The M0 spike answers what chezmoi does with it; the owner decides after.
+- What a plain dotfiles repository (files named `.bashrc`, not `dot_bashrc`) should do. chezmoi renders it to its non-dot files only and reports success ([M0](../research/2026-10-dotfiles-render.md)), so Boxface detects it (dot-named files outside `.git` and `.chezmoi*`, none of them managed) and either copies the repository as it is, without `.git`, or fails the build with a message. The owner decides.
