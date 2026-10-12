@@ -150,8 +150,8 @@ func (h *Host) WaitReady(ctx context.Context, environmentID string) error {
 			return err
 		}
 		if !active {
-			out, _ := run(context.Background(), "journalctl", "--unit", unit, "--lines", "20", "--no-pager", "--output", "cat")
-			return fmt.Errorf("VM exited before reporting readiness: %s", strings.TrimSpace(string(out)))
+			out, _ := run(context.Background(), "journalctl", "--unit", unit, "--lines", "200", "--no-pager", "--output", "cat")
+			return fmt.Errorf("VM exited before reporting readiness: %s", consoleSummary(string(out)))
 		}
 		select {
 		case <-ctx.Done():
@@ -159,6 +159,19 @@ func (h *Host) WaitReady(ctx context.Context, environmentID string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+func consoleSummary(console string) string {
+	lines := strings.Split(strings.TrimSpace(console), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if _, msg, ok := strings.Cut(lines[i], "Kernel panic - not syncing: "); ok {
+			return "guest kernel panic: " + strings.TrimSpace(msg)
+		}
+	}
+	if len(lines) > 5 {
+		lines = lines[len(lines)-5:]
+	}
+	return strings.Join(lines, " | ")
 }
 
 func (h *Host) StopVM(ctx context.Context, environmentID string) error {

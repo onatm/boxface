@@ -57,6 +57,14 @@ Use temporary paths and atomic publication for images and disks.
 | Secret lookup fails | Fail only the dependent launch; never fall back to another credential |
 | Delete interrupted | Resume cleanup without touching unowned resources |
 
+Implemented recovery ([lifecycle plan](../plans/2026-10-durable-lifecycle.md) scenarios R1–R5):
+
+- **API restart:** interrupted operations resume from their last completed step.
+- **Worker unavailable:** a step that cannot reach the worker is retried every 2 seconds until the worker returns; it is not failed. Every worker call is idempotent, so retries are safe.
+- **Launch failure:** a failed create or start stops the VM and removes its network, keeps the disk, and leaves the environment `stopped` (desired `stopped`) with the error. If that cleanup itself fails, the environment is `error`.
+- **Reconciliation:** at API startup and every 30 seconds, a `running` environment with no pending operation and no running VM, as after a host reboot or a VM crash, has its network removed and becomes `stopped` (desired `stopped`) with an explanatory error. It is never restarted automatically. Environments with pending operations are skipped.
+- **Retained disks** of deleted environments can be purged later with another delete and `purge`.
+
 Image garbage collection protects artifacts referenced by environments, backups, and active operations. Retained data disks remain visible in inventory and consume quota until explicitly purged.
 
 ### Runtime / Operations

@@ -132,7 +132,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("worker %s: %w", path, err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: %s: %v", lifecycle.ErrWorkerUnavailable, path, err)
 	}
 	defer resp.Body.Close()
 	switch {
@@ -181,4 +184,18 @@ func (c *Client) Inventory(ctx context.Context) (Inventory, error) {
 	var inv Inventory
 	err := c.do(ctx, http.MethodGet, "/v1/inventory", nil, &inv)
 	return inv, err
+}
+
+func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {
+	inv, err := c.Inventory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	active := map[string]bool{}
+	for _, e := range inv.Environments {
+		if e.VM {
+			active[e.EnvironmentID] = true
+		}
+	}
+	return active, nil
 }

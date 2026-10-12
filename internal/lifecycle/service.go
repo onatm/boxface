@@ -137,15 +137,17 @@ func (s *Service) Delete(ctx context.Context, ownerID, idempotencyKey, environme
 
 func (s *Service) submitForEnvironment(ctx context.Context, ownerID, idempotencyKey, opType string, params targetParams, desired string) (Accepted, error) {
 	return s.submit(ctx, ownerID, idempotencyKey, opType, params, func(tx *sql.Tx, opID string) (string, error) {
-		var current string
-		err := tx.QueryRowContext(ctx, `SELECT desired_state FROM environments WHERE id = ? AND owner_id = ?`, params.EnvironmentID, ownerID).Scan(&current)
+		var current, retention string
+		err := tx.QueryRowContext(ctx, `SELECT e.desired_state, d.retention FROM environments e JOIN data_disks d ON d.environment_id = e.id WHERE e.id = ? AND e.owner_id = ?`,
+			params.EnvironmentID, ownerID).Scan(&current, &retention)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrNotFound
 		}
 		if err != nil {
 			return "", err
 		}
-		if current == "deleted" {
+		purgingRetainedDisk := opType == TypeDelete && params.Purge && retention == "retained"
+		if current == "deleted" && !purgingRetainedDisk {
 			return "", ErrEnvironmentDeleted
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE environments SET desired_state = ?, updated_at = ? WHERE id = ?`, desired, timestamp(), params.EnvironmentID); err != nil {

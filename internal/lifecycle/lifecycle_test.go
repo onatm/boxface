@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -27,16 +29,22 @@ type fakeWorker struct {
 	block   map[string]chan struct{}
 	entered chan string
 	fail    map[string]error
+	flaky   map[string]int
+	active  map[string]bool
 }
 
 func newFakeWorker() *fakeWorker {
-	return &fakeWorker{disks: map[string]bool{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}}
+	return &fakeWorker{disks: map[string]bool{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
 }
 
 func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error {
 	f.mu.Lock()
 	gate := f.block[name]
 	err := f.fail[name]
+	if f.flaky[name] > 0 {
+		f.flaky[name]--
+		err = fmt.Errorf("%w: connection refused", ErrWorkerUnavailable)
+	}
 	f.mu.Unlock()
 	if gate != nil {
 		f.entered <- name
@@ -80,6 +88,12 @@ func (f *fakeWorker) WaitReady(ctx context.Context, id string) error {
 	return f.call(ctx, "WaitReady", nil)
 }
 
+func (f *fakeWorker) ActiveVMs(context.Context) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.vms), nil
+}
+
 func (f *fakeWorker) callLog() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -108,6 +122,7 @@ func newService(t *testing.T, db *sql.DB, w Worker) (*Service, *Runner, context.
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := NewRunner(ctx, db, w)
+	r.RetryDelay = time.Millisecond
 	t.Cleanup(func() { cancel(); r.Wait() })
 	return NewService(db, r, Capacity{}), r, cancel
 }
@@ -303,10 +318,10 @@ func TestRunnerResumesFromLastCompletedStep(t *testing.T) {
 	}
 }
 
-func TestFailedStepRetainsDiskAndReportsError(t *testing.T) {
+func TestFailedLaunchCleansUpAndKeepsDisk(t *testing.T) {
 	db := openDB(t)
 	w := newFakeWorker()
-	w.fail["StartVM"] = errors.New("firecracker exited")
+	w.fail["WaitReady"] = errors.New("VM exited before reporting readiness")
 	s, r, _ := newService(t, db, w)
 
 	acc, err := s.Create(context.Background(), owner, "", travel)
@@ -316,15 +331,96 @@ func TestFailedStepRetainsDiskAndReportsError(t *testing.T) {
 	r.Wait()
 
 	op := mustOperation(t, s, acc.OperationID)
-	if op.State != "failed" || op.ErrorCode != "step_failed" || op.ErrorMessage != "start_vm: firecracker exited" {
+	if op.State != "failed" || op.ErrorCode != "step_failed" || op.ErrorMessage != "wait_ready: VM exited before reporting readiness" {
 		t.Fatalf("operation = %+v", op)
 	}
 	env := mustEnvironment(t, s, acc.EnvironmentID)
-	if env.ObservedState != "error" || env.Error != op.ErrorMessage || env.DiskRetention != "attached" {
+	if env.ObservedState != "stopped" || env.DesiredState != "stopped" || env.Error != op.ErrorMessage || env.DiskRetention != "attached" {
 		t.Fatalf("environment = %+v", env)
 	}
-	if !w.disks[env.DiskID] {
-		t.Fatal("disk removed after failed launch")
+	if got, want := w.callLog(), []string{"CreateDisk", "CreateNetwork", "StartVM", "StopVM", "RemoveNetwork"}; !slices.Equal(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
+	}
+	if !w.disks[env.DiskID] || w.vms[acc.EnvironmentID] {
+		t.Fatalf("disks %v, vms %v", w.disks, w.vms)
+	}
+}
+
+func TestFailedCleanupLeavesEnvironmentInError(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	w.fail["WaitReady"] = errors.New("timed out")
+	w.fail["RemoveNetwork"] = errors.New("ip link del failed")
+	s, r, _ := newService(t, db, w)
+
+	acc, _ := s.Create(context.Background(), owner, "", travel)
+	r.Wait()
+	env := mustEnvironment(t, s, acc.EnvironmentID)
+	if env.ObservedState != "error" || env.Error != "wait_ready: timed out; cleanup remove_network failed: ip link del failed" {
+		t.Fatalf("environment = %+v", env)
+	}
+}
+
+func TestUnavailableWorkerRetriesStep(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	w.flaky["StartVM"] = 3
+	s, r, _ := newService(t, db, w)
+
+	acc, _ := s.Create(context.Background(), owner, "", travel)
+	r.Wait()
+	if op := mustOperation(t, s, acc.OperationID); op.State != "succeeded" {
+		t.Fatalf("operation = %+v", op)
+	}
+	if w.flaky["StartVM"] != 0 {
+		t.Fatalf("StartVM retried too few times: %d attempts left", w.flaky["StartVM"])
+	}
+}
+
+func TestReconcileStopsEnvironmentsWithoutVMs(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+
+	gone, _ := s.Create(context.Background(), owner, "", travel)
+	kept := travel
+	kept.Name = "kept"
+	alive, _ := s.Create(context.Background(), owner, "", kept)
+	r.Wait()
+	busyReq := travel
+	busyReq.Name = "busy"
+	busy, _ := s.Create(context.Background(), owner, "", busyReq)
+	r.Wait()
+	if _, err := db.Exec(`INSERT INTO operations (id, owner_id, type, target_id, request_hash, params, state, created_at, updated_at)
+		VALUES ('held', ?, 'environment.start', ?, '', '{}', 'running', '2026-10-09T00:00:00Z', '2026-10-09T00:00:00Z')`, owner, busy.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	delete(w.vms, gone.EnvironmentID)
+	delete(w.vms, busy.EnvironmentID)
+	w.mu.Unlock()
+
+	r.mu.Lock()
+	r.active[busy.EnvironmentID] = true
+	r.mu.Unlock()
+	stopped, err := r.Reconcile(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stopped, []string{gone.EnvironmentID}) {
+		t.Fatalf("stopped = %v, want only %s", stopped, gone.EnvironmentID)
+	}
+	if env := mustEnvironment(t, s, gone.EnvironmentID); env.ObservedState != "stopped" || env.DesiredState != "stopped" || env.Error != reconciledMessage {
+		t.Fatalf("gone = %+v", env)
+	}
+	if env := mustEnvironment(t, s, alive.EnvironmentID); env.ObservedState != "running" {
+		t.Fatalf("alive = %+v", env)
+	}
+	if env := mustEnvironment(t, s, busy.EnvironmentID); env.ObservedState != "running" {
+		t.Fatalf("environment with a pending operation was reconciled: %+v", env)
+	}
+	if got := w.callLog(); got[len(got)-1] != "RemoveNetwork" {
+		t.Fatalf("network not removed: %v", got)
 	}
 }
 
@@ -453,5 +549,32 @@ func TestInternalErrorFailsOperationInsteadOfRetrying(t *testing.T) {
 	}
 	if op := mustOperation(t, s, "bogus-op"); op.State != "failed" || op.ErrorCode != "internal_error" {
 		t.Fatalf("operation = %+v", op)
+	}
+}
+
+func TestRetainedDiskCanBePurgedAfterDelete(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+
+	acc, _ := s.Create(context.Background(), owner, "", travel)
+	r.Wait()
+	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, false); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, false); !errors.Is(err, ErrEnvironmentDeleted) {
+		t.Fatalf("second delete without purge: err = %v", err)
+	}
+	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, true); err != nil {
+		t.Fatalf("purge after delete: %v", err)
+	}
+	r.Wait()
+	env := mustEnvironment(t, s, acc.EnvironmentID)
+	if env.ObservedState != "deleted" || env.DiskRetention != "purged" || w.disks[env.DiskID] {
+		t.Fatalf("environment = %+v, disks %v", env, w.disks)
+	}
+	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, true); !errors.Is(err, ErrEnvironmentDeleted) {
+		t.Fatalf("purge twice: err = %v", err)
 	}
 }
