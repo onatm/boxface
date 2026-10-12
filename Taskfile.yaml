@@ -1,0 +1,26 @@
+version: "3"
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty
+  LDFLAGS: -s -w -X github.com/onatm/boxface/internal/version.Version={{.VERSION}}
+
+tasks:
+  build:
+    desc: Build the server binaries for linux/amd64 and boxfacectl for linux/amd64 and linux/arm64
+    env:
+      CGO_ENABLED: "0"
+    cmds:
+      - GOOS=linux GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o bin/linux-amd64/ ./cmd/...
+      - GOOS=linux GOARCH=arm64 go build -ldflags '{{.LDFLAGS}}' -o bin/linux-arm64/ ./cmd/boxfacectl
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Check formatting and run go vet
+    cmds:
+      - test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - go vet ./...

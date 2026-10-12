@@ -1,6 +1,6 @@
 # Host Worker
 
-**Status:** Draft — proposed design; hypervisor not selected
+**Status:** Draft — Firecracker backend; implementation decisions confirmed in the [Durable Server Lifecycle](../plans/2026-10-durable-lifecycle.md#decisions) plan, not yet implemented
 
 ---
 
@@ -23,7 +23,8 @@ The host worker performs the narrow set of privileged host operations Boxface ne
 
 ### Interfaces & Contracts
 
-- The worker accepts validated identifiers and structured specifications through a local authenticated interface from the API.
+- The worker runs as root as `boxface-worker` and holds no database. It accepts validated identifiers and structured specifications from the API as JSON over HTTP on a Unix socket readable only by the `boxface` group, and checks the caller's UID with `SO_PEERCRED`.
+- Every call creates or removes one resource idempotently: repeating a call that already took effect changes nothing.
 - It never runs shell strings supplied by clients; `exec` arguments travel as an argument array (see [boxfacectl](./cli.md)).
 - The hypervisor runtime sits behind a narrow interface. Firecracker is the first candidate; Cloud Hypervisor is the fallback. Implement one backend first.
 
@@ -49,18 +50,22 @@ stateDiagram-v2
     error --> stopped: reconciled
 ```
 
-`running` requires the [guest integration service](./guest.md#guest-integration-service) to report readiness; a running VMM alone is not ready. Stopping preserves disk data but ends running processes. A clean stop asks the guest to shut down; with Firecracker this is `SendCtrlAltDel`, which requires the i8042 keyboard driver in the guest kernel ([Gate A](../research/2026-10-gate-a.md)). Disconnecting a client preserves processes. Suspend/resume and memory snapshots are outside the initial MVP.
+`running` requires the [guest integration service](./guest.md#guest-integration-service) to report readiness, received by the worker on the VM's own vsock socket; a running VMM alone is not ready. Stopping preserves disk data but ends running processes. A clean stop asks the guest to shut down; with Firecracker this is `SendCtrlAltDel`, which requires the i8042 keyboard driver in the guest kernel ([Gate A](../research/2026-10-gate-a.md)). Disconnecting a client preserves processes. Suspend/resume and memory snapshots are outside the initial MVP.
+
+### VM Processes
+
+Each Firecracker VM runs in a systemd transient unit named `boxface-vm-<environment-id>.service`, as an unprivileged `boxface-vm` user with access to `/dev/kvm` and the environment's tap device. The unit name identifies the owning environment, VMs keep running when the worker restarts, a host reboot ends them, and cgroup limits enforce memory and CPU. The Firecracker jailer is deferred.
 
 ### Networking
 
-- Provide outbound guest networking, guest isolation, and a private access path.
+- Each environment gets a `/30` from a configured pool and its own tap device. The guest address is passed on the kernel command line (`ip=`) and applied by `systemd-network-generator`, so one image serves every environment.
+- nftables allow guest traffic to the internet and drop guest traffic to the host and to other guests.
 - Deny management-plane and other-guest access by default. Allow required outbound development traffic under a configurable policy.
 
 ### Data Model / State
 
-- Environment: UUID, owner, name, image ID, resource limits, desired/observed state, disk ID.
-- Data disk: ID, path, allocated capacity, retention state, attached environment.
-- Persist process identity with host boot identity and runtime metadata; PID alone is insufficient after restart.
+- The API is the only writer of intent; records are in [Boxface API](./api.md#data-model).
+- The worker discovers actual resources from systemd units, tap devices, and the per-environment directory `/var/lib/boxface/environments/<id>/`, and reports them as inventory. A unit name, not a PID, identifies a VM after restart.
 
 ### Runtime / Operations
 

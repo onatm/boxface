@@ -2,7 +2,7 @@ Boxface provides persistent development environments inside microVMs running on 
 
 ## Project Status
 
-Boxface is not implemented yet. The docs describe a proposed architecture and design; the baseline feasibility gates passed (see `docs/research/`), and other integrations are validated as their [Roadmap](./docs/ROADMAP.md) stages run. The implementation language is Go; the repository has no build tooling yet.
+Boxface is not implemented yet. The docs describe a proposed architecture and design; the baseline feasibility gates passed (see `docs/research/`), and other integrations are validated as their [Roadmap](./docs/ROADMAP.md) stages run. The implementation is Go, starting with the [lifecycle plan](./docs/plans/2026-10-durable-lifecycle.md).
 
 ## Project Documentation
 
@@ -59,7 +59,11 @@ Consult docs only when relevant to the task:
 
 ### Task Commands
 
-No Taskfile exists yet. When the first code lands, add a `Taskfile.yaml` as the source of truth for build, test, and lint commands, and list the verification commands here.
+`Taskfile.yaml` is the source of truth for build, test, and lint commands. The code is Go.
+
+- `task build` - server binaries for linux/amd64 and `boxfacectl` for linux/amd64 and linux/arm64, in `bin/`
+- `task test` - unit tests
+- `task lint` - `gofmt` check and `go vet`
 
 ### Post-Implementation Checklist
 
