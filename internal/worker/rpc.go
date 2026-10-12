@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 
 	"github.com/onatm/boxface/internal/lifecycle"
 )
@@ -16,6 +19,27 @@ import (
 type Backend interface {
 	lifecycle.Worker
 	Inventory(ctx context.Context) (Inventory, error)
+	Endpoint(ctx context.Context, environmentID string) (netip.Addr, error)
+	HostKey(ctx context.Context, diskID string) (string, error)
+	SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error
+	StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error
+	Storage(ctx context.Context) (Storage, error)
+	ProfileDrives(ctx context.Context) ([]string, error)
+	RemoveProfileDrive(ctx context.Context, key string) error
+	RemoveBuildCache(ctx context.Context, ownerID string) error
+	BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error)
+}
+
+type credentialsRequest struct {
+	Credentials lifecycle.Credentials `json:"credentials"`
+}
+
+type endpointResponse struct {
+	Address netip.Addr `json:"address"`
+}
+
+type hostKeyResponse struct {
+	HostKey string `json:"host_key"`
 }
 
 type idRequest struct {
@@ -64,14 +88,44 @@ func NewHandler(b Backend) http.Handler {
 		return b.StartVM(r.Context(), spec)
 	})
 	handle("POST /v1/vms/stop", byID(b.StopVM))
-	handle("POST /v1/vms/wait-ready", byID(b.WaitReady))
-	mux.HandleFunc("GET /v1/inventory", func(w http.ResponseWriter, r *http.Request) {
-		inv, err := b.Inventory(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-			return
+	handle("POST /v1/builds/start", func(r *http.Request) error {
+		var spec lifecycle.BuildSpec
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&spec); err != nil {
+			return fmt.Errorf("decode request: %w", err)
 		}
-		writeJSON(w, http.StatusOK, inv)
+		return b.StartBuild(r.Context(), spec)
+	})
+	handle("PUT /v1/environments/{id}/credentials", func(r *http.Request) error {
+		var req credentialsRequest
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+			return errors.New("decode credentials request")
+		}
+		return b.SetCredentials(r.Context(), r.PathValue("id"), req.Credentials)
+	})
+	handle("POST /v1/vms/wait-ready", byID(b.WaitReady))
+	get := func(pattern string, call func(r *http.Request) (any, error)) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+			v, err := call(r)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, v)
+		})
+	}
+	get("GET /v1/inventory", func(r *http.Request) (any, error) { return b.Inventory(r.Context()) })
+	get("GET /v1/builds/{id}", func(r *http.Request) (any, error) { return b.BuildStatus(r.Context(), r.PathValue("id")) })
+	get("GET /v1/storage", func(r *http.Request) (any, error) { return b.Storage(r.Context()) })
+	get("GET /v1/profile-drives", func(r *http.Request) (any, error) { return b.ProfileDrives(r.Context()) })
+	handle("DELETE /v1/profile-drives/{key}", func(r *http.Request) error { return b.RemoveProfileDrive(r.Context(), r.PathValue("key")) })
+	handle("DELETE /v1/build-caches/{owner}", func(r *http.Request) error { return b.RemoveBuildCache(r.Context(), r.PathValue("owner")) })
+	get("GET /v1/environments/{id}/endpoint", func(r *http.Request) (any, error) {
+		addr, err := b.Endpoint(r.Context(), r.PathValue("id"))
+		return endpointResponse{addr}, err
+	})
+	get("GET /v1/disks/{id}/host-key", func(r *http.Request) (any, error) {
+		key, err := b.HostKey(r.Context(), r.PathValue("id"))
+		return hostKeyResponse{key}, err
 	})
 	return mux
 }
@@ -184,6 +238,52 @@ func (c *Client) Inventory(ctx context.Context) (Inventory, error) {
 	var inv Inventory
 	err := c.do(ctx, http.MethodGet, "/v1/inventory", nil, &inv)
 	return inv, err
+}
+
+func (c *Client) Endpoint(ctx context.Context, environmentID string) (netip.Addr, error) {
+	var resp endpointResponse
+	err := c.do(ctx, http.MethodGet, "/v1/environments/"+url.PathEscape(environmentID)+"/endpoint", nil, &resp)
+	return resp.Address, err
+}
+
+func (c *Client) HostKey(ctx context.Context, diskID string) (string, error) {
+	var resp hostKeyResponse
+	err := c.do(ctx, http.MethodGet, "/v1/disks/"+url.PathEscape(diskID)+"/host-key", nil, &resp)
+	return resp.HostKey, err
+}
+
+func (c *Client) SetCredentials(ctx context.Context, environmentID string, creds lifecycle.Credentials) error {
+	return c.do(ctx, http.MethodPut, "/v1/environments/"+url.PathEscape(environmentID)+"/credentials", credentialsRequest{creds}, nil)
+}
+
+func (c *Client) StartBuild(ctx context.Context, spec lifecycle.BuildSpec) error {
+	return c.do(ctx, http.MethodPost, "/v1/builds/start", spec, nil)
+}
+
+func (c *Client) BuildStatus(ctx context.Context, buildID string) (lifecycle.BuildStatus, error) {
+	var st lifecycle.BuildStatus
+	err := c.do(ctx, http.MethodGet, "/v1/builds/"+url.PathEscape(buildID), nil, &st)
+	return st, err
+}
+
+func (c *Client) Storage(ctx context.Context) (Storage, error) {
+	var st Storage
+	err := c.do(ctx, http.MethodGet, "/v1/storage", nil, &st)
+	return st, err
+}
+
+func (c *Client) ProfileDrives(ctx context.Context) ([]string, error) {
+	var keys []string
+	err := c.do(ctx, http.MethodGet, "/v1/profile-drives", nil, &keys)
+	return keys, err
+}
+
+func (c *Client) RemoveProfileDrive(ctx context.Context, key string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/profile-drives/"+url.PathEscape(key), nil, nil)
+}
+
+func (c *Client) RemoveBuildCache(ctx context.Context, ownerID string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/build-caches/"+url.PathEscape(ownerID), nil, nil)
 }
 
 func (c *Client) ActiveVMs(ctx context.Context) (map[string]bool, error) {

@@ -13,6 +13,7 @@ type EnvironmentResources struct {
 	Network       bool   `json:"network"`
 	VM            bool   `json:"vm"`
 	Ready         bool   `json:"ready"`
+	Credentials   bool   `json:"credentials"`
 }
 
 type Inventory struct {
@@ -61,6 +62,7 @@ func (h *Host) Inventory(ctx context.Context) (Inventory, error) {
 			Network:       linkExists(ctx, tapName(id)),
 			VM:            vm,
 			Ready:         vm && ready,
+			Credentials:   h.broker.loaded(id),
 		})
 	}
 	sort.Slice(inv.Environments, func(i, j int) bool { return inv.Environments[i].EnvironmentID < inv.Environments[j].EnvironmentID })

@@ -28,8 +28,7 @@ func tapName(environmentID string) string {
 }
 
 func (h *Host) addressing(index int) (addressing, error) {
-	slots := 1 << (32 - h.cfg.Pool.Bits() - 2)
-	if index < 0 || index >= slots {
+	if index < 0 || index >= h.slots() {
 		return addressing{}, fmt.Errorf("address index %d outside pool %s", index, h.cfg.Pool)
 	}
 	base := h.cfg.Pool.Masked().Addr().As4()
@@ -40,6 +39,10 @@ func (h *Host) addressing(index int) (addressing, error) {
 	}
 	return addressing{Index: index, Host: addr(n + 1), Guest: addr(n + 2)}, nil
 }
+
+func (h *Host) slots() int { return 1 << (32 - h.cfg.Pool.Bits() - 2) }
+
+func (h *Host) buildAddressing() (addressing, error) { return h.addressing(h.slots() - 1) }
 
 func (h *Host) readAddressing(environmentID string) (addressing, error) {
 	b, err := os.ReadFile(filepath.Join(h.envDir(environmentID), "network"))
@@ -76,9 +79,12 @@ func (h *Host) allocate(environmentID string) (addressing, error) {
 	for used[index] {
 		index++
 	}
+	if index >= h.slots()-1 {
+		return addressing{}, fmt.Errorf("network pool %s exhausted", h.cfg.Pool)
+	}
 	a, err := h.addressing(index)
 	if err != nil {
-		return addressing{}, fmt.Errorf("network pool exhausted: %w", err)
+		return addressing{}, err
 	}
 
 	dir := h.envDir(environmentID)
@@ -140,6 +146,22 @@ func (h *Host) RemoveNetwork(ctx context.Context, environmentID string) error {
 	return os.RemoveAll(h.envDir(environmentID))
 }
 
+func (h *Host) Endpoint(ctx context.Context, environmentID string) (netip.Addr, error) {
+	if err := validID(environmentID); err != nil {
+		return netip.Addr{}, err
+	}
+	if active, err := unitActive(ctx, unitName(environmentID)); err != nil {
+		return netip.Addr{}, err
+	} else if !active {
+		return netip.Addr{}, fmt.Errorf("environment %s VM is not running", environmentID)
+	}
+	a, err := h.readAddressing(environmentID)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("environment %s network: %w", environmentID, err)
+	}
+	return a.Guest, nil
+}
+
 func (h *Host) firewallRuleset() string {
 	return fmt.Sprintf(`table inet boxface
 delete table inet boxface
@@ -152,6 +174,8 @@ table inet boxface {
 	chain forward {
 		type filter hook forward priority filter; policy accept;
 		iifname "%[1]s*" oifname "%[1]s*" drop
+		iifname "%[1]s*" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
+		iifname "%[1]s*" ip6 daddr fd7a:115c:a1e0::/48 drop
 		iifname "%[1]s*" accept
 		oifname "%[1]s*" ct state established,related accept
 		oifname "%[1]s*" drop

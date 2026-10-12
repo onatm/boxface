@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,14 +21,15 @@ import (
 const guestUID = 1000
 
 type Config struct {
-	StateDir           string
-	ImagesDir          string
-	Firecracker        string
-	VMUser             string
-	Pool               netip.Prefix
-	AuthorizedKeysFile string
-	ReadyTimeout       time.Duration
-	StopTimeout        time.Duration
+	StateDir       string
+	ImagesDir      string
+	Firecracker    string
+	VMUser         string
+	Pool           netip.Prefix
+	ReadyTimeout   time.Duration
+	StopTimeout    time.Duration
+	CredentialWait time.Duration
+	BuilderImage   string
 }
 
 type Host struct {
@@ -35,7 +37,9 @@ type Host struct {
 	vmUID, vmGID int
 
 	mu        sync.Mutex
-	listeners map[string]net.Listener
+	listeners map[string][]net.Listener
+	broker    *broker
+	buildMu   sync.Mutex
 }
 
 func New(ctx context.Context, cfg Config) (*Host, error) {
@@ -48,9 +52,9 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 	}
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
-	h := &Host{cfg: cfg, vmUID: uid, vmGID: gid, listeners: map[string]net.Listener{}}
+	h := &Host{cfg: cfg, vmUID: uid, vmGID: gid, listeners: map[string][]net.Listener{}, broker: newBroker(cmp.Or(cfg.CredentialWait, 35*time.Second))}
 
-	for _, dir := range []string{h.environmentsDir(), h.disksDir()} {
+	for _, dir := range []string{h.environmentsDir(), h.disksDir(), h.profilesDir(), h.buildsDir()} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
 		}
@@ -70,8 +74,10 @@ func New(ctx context.Context, cfg Config) (*Host, error) {
 func (h *Host) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for id, l := range h.listeners {
-		l.Close()
+	for id, ls := range h.listeners {
+		for _, l := range ls {
+			l.Close()
+		}
 		delete(h.listeners, id)
 	}
 }
@@ -79,8 +85,15 @@ func (h *Host) Close() {
 func (h *Host) environmentsDir() string { return filepath.Join(h.cfg.StateDir, "environments") }
 func (h *Host) disksDir() string        { return filepath.Join(h.cfg.StateDir, "disks") }
 func (h *Host) envDir(id string) string { return filepath.Join(h.environmentsDir(), id) }
+func (h *Host) profilesDir() string     { return filepath.Join(h.cfg.StateDir, "profiles") }
+func (h *Host) profilePath(id string) string {
+	return filepath.Join(h.profilesDir(), id+".img")
+}
 func (h *Host) diskPath(id string) string {
 	return filepath.Join(h.disksDir(), id+".ext4")
+}
+func (h *Host) hostKeyPath(id string) string {
+	return filepath.Join(h.disksDir(), id+".host_key.pub")
 }
 
 func validID(id string) error {

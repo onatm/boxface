@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,15 +29,15 @@ func TestBootstrapCodeIssuesTokenOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, owner, err := s.Login(ctx, code)
+	token, owner, err := s.Login(ctx, code, "tablet", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Authenticate(ctx, token)
+	got, _, err := s.Authenticate(ctx, token)
 	if err != nil || got != owner {
 		t.Fatalf("authenticate = %q, %v; want %q", got, err, owner)
 	}
-	if _, _, err := s.Login(ctx, code); !errors.Is(err, ErrUnauthorized) {
+	if _, _, err := s.Login(ctx, code, "tablet", "127.0.0.1"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("second login with the same code: err = %v", err)
 	}
 	var stored int
@@ -50,8 +52,8 @@ func TestBootstrapReusesOwner(t *testing.T) {
 	ctx := context.Background()
 	first, _ := s.Bootstrap(ctx, "onat", time.Minute)
 	second, _ := s.Bootstrap(ctx, "onat", time.Minute)
-	_, a, _ := s.Login(ctx, first)
-	_, b, _ := s.Login(ctx, second)
+	_, a, _ := s.Login(ctx, first, "tablet", "127.0.0.1")
+	_, b, _ := s.Login(ctx, second, "tablet", "127.0.0.1")
 	if a == "" || a != b {
 		t.Fatalf("owners = %q, %q", a, b)
 	}
@@ -62,7 +64,7 @@ func TestExpiredCodeRejected(t *testing.T) {
 	ctx := context.Background()
 	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
 	s.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
-	if _, _, err := s.Login(ctx, code); !errors.Is(err, ErrUnauthorized) {
+	if _, _, err := s.Login(ctx, code, "tablet", "127.0.0.1"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -71,14 +73,197 @@ func TestRevokedTokenRejected(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
-	token, _, _ := s.Login(ctx, code)
+	token, _, _ := s.Login(ctx, code, "tablet", "127.0.0.1")
 	if n, err := s.RevokeAll(ctx, "onat"); err != nil || n != 1 {
 		t.Fatalf("revoked %d, %v", n, err)
 	}
-	if _, err := s.Authenticate(ctx, token); !errors.Is(err, ErrUnauthorized) {
+	if _, _, err := s.Authenticate(ctx, token); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := s.Authenticate(ctx, "bfx_unknown"); !errors.Is(err, ErrUnauthorized) {
+	if _, _, err := s.Authenticate(ctx, "bfx_unknown"); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("unknown token: err = %v", err)
+	}
+}
+
+func TestTokensAreNamedAndRevokedIndividually(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	start := time.Now()
+	s.now = func() time.Time { return start }
+	codeA, _ := s.Bootstrap(ctx, "onat", time.Minute)
+	codeB, _ := s.Bootstrap(ctx, "onat", time.Minute)
+	tablet, owner, _ := s.Login(ctx, codeA, "tablet", "100.64.0.7")
+	laptop, _, _ := s.Login(ctx, codeB, "", "127.0.0.1")
+	_, tabletID, err := s.Authenticate(ctx, tablet)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := s.Tokens(ctx, owner, tabletID)
+	if err != nil || len(list) != 2 || list[0].Name != "tablet" || !list[0].Current || list[1].Name != "unnamed" || list[1].Current {
+		t.Fatalf("tokens = %+v, %v", list, err)
+	}
+	if list[0].LastUsedAt == nil || list[1].LastUsedAt != nil {
+		t.Fatalf("last used = %v, %v", list[0].LastUsedAt, list[1].LastUsedAt)
+	}
+	first := *list[0].LastUsedAt
+	s.now = func() time.Time { return start.Add(30 * time.Second) }
+	s.Authenticate(ctx, tablet)
+	if list, _ := s.Tokens(ctx, owner, ""); *list[0].LastUsedAt != first {
+		t.Fatalf("last used rewritten within a minute: %s", *list[0].LastUsedAt)
+	}
+	s.now = func() time.Time { return start.Add(2 * time.Minute) }
+	s.Authenticate(ctx, tablet)
+	if list, _ := s.Tokens(ctx, owner, ""); *list[0].LastUsedAt == first {
+		t.Fatal("last used not updated after a minute")
+	}
+
+	if err := s.Revoke(ctx, "someone-else", tabletID, "127.0.0.1"); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("other owner's revoke: err = %v", err)
+	}
+	if err := s.Revoke(ctx, owner, tabletID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Authenticate(ctx, tablet); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("revoked token: err = %v", err)
+	}
+	if _, _, err := s.Authenticate(ctx, laptop); err != nil {
+		t.Fatalf("other token after revoke: %v", err)
+	}
+	if err := s.Revoke(ctx, owner, tabletID, "127.0.0.1"); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("second revoke: err = %v", err)
+	}
+
+	var events []string
+	rows, _ := s.db.Query(`SELECT action || ' ' || remote FROM auth_events ORDER BY id`)
+	for rows.Next() {
+		var e string
+		rows.Scan(&e)
+		events = append(events, e)
+	}
+	rows.Close()
+	if want := []string{"login 100.64.0.7", "login 127.0.0.1", "token.revoke 127.0.0.1"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %q, want %q", events, want)
+	}
+}
+
+func TestLoginRejectsBadNames(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
+	for _, name := range []string{strings.Repeat("x", 65), "tab\nlet"} {
+		if _, _, err := s.Login(ctx, code, name, "127.0.0.1"); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("name %q: err = %v", name, err)
+		}
+	}
+	if _, _, err := s.Login(ctx, code, "tablet", "127.0.0.1"); err != nil {
+		t.Fatalf("code consumed by rejected names: %v", err)
+	}
+}
+
+func TestIdentityBindingAndLogin(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	if _, _, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", "100.64.0.2"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unbound login: err = %v", err)
+	}
+	s.Bootstrap(ctx, "onat", time.Minute)
+	s.Bootstrap(ctx, "other", time.Minute)
+	ident, err := s.BindOwnerIdentity(ctx, "onat", ProviderTailscale, "onat@github")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, owner, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", "100.64.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := s.Authenticate(ctx, token); err != nil || got != owner {
+		t.Fatalf("authenticate = %q, %v", got, err)
+	}
+	var target string
+	s.db.QueryRow(`SELECT target_id FROM auth_events WHERE action = 'login' ORDER BY id DESC LIMIT 1`).Scan(&target)
+	if target != "tailscale:onat@github" {
+		t.Fatalf("login event target = %q", target)
+	}
+
+	again, created, err := s.BindIdentity(ctx, owner, ProviderTailscale, "onat@github", "", "")
+	if err != nil || created || again.ID != ident.ID {
+		t.Fatalf("rebind = %+v, %v, %v", again, created, err)
+	}
+	if _, err := s.BindOwnerIdentity(ctx, "other", ProviderTailscale, "onat@github"); !errors.Is(err, ErrIdentityTaken) {
+		t.Fatalf("bind to another owner: err = %v", err)
+	}
+	for _, bad := range [][2]string{{"oidc", "x"}, {ProviderTailscale, ""}, {ProviderTailscale, "a b"}} {
+		if _, _, err := s.BindIdentity(ctx, owner, bad[0], bad[1], "", ""); !errors.Is(err, ErrInvalidIdentity) {
+			t.Fatalf("bind %q: err = %v", bad, err)
+		}
+	}
+	if list, err := s.Identities(ctx, owner); err != nil || len(list) != 1 || list[0].Subject != "onat@github" {
+		t.Fatalf("identities = %+v, %v", list, err)
+	}
+
+	var otherID string
+	s.db.QueryRow(`SELECT id FROM owners WHERE name = 'other'`).Scan(&otherID)
+	if err := s.UnbindIdentity(ctx, otherID, ident.ID, "", ""); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("unbind by another owner: err = %v", err)
+	}
+	if err := s.UnbindIdentity(ctx, owner, ident.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.LoginIdentity(ctx, ProviderTailscale, "onat@github", "tablet", ""); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("login after unbind: err = %v", err)
+	}
+	if _, _, err := s.Authenticate(ctx, token); err != nil {
+		t.Fatalf("token issued before unbind: %v", err)
+	}
+}
+
+func TestWebSessions(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
+	secret, owner, err := s.WebLogin(ctx, code, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.WebLogin(ctx, code, "127.0.0.1"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("code reused for a session: err = %v", err)
+	}
+	got, sessionID, err := s.AuthenticateSession(ctx, secret)
+	if err != nil || got != owner || !strings.HasPrefix(sessionID, "web:") {
+		t.Fatalf("authenticate = %q, %q, %v", got, sessionID, err)
+	}
+	if _, _, err := s.Authenticate(ctx, secret); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("a session secret works as an API token")
+	}
+	if name, err := s.OwnerName(ctx, owner); err != nil || name != "onat" {
+		t.Fatalf("owner name = %q, %v", name, err)
+	}
+
+	s.now = func() time.Time { return time.Now().Add(SessionTTL + time.Minute) }
+	if _, _, err := s.AuthenticateSession(ctx, secret); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expired session: err = %v", err)
+	}
+	s.now = time.Now
+
+	if _, _, err := s.WebLoginIdentity(ctx, ProviderTailscale, "onat@github", ""); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unbound identity session: err = %v", err)
+	}
+	s.BindOwnerIdentity(ctx, "onat", ProviderTailscale, "onat@github")
+	if bound, _ := s.IdentityBound(ctx, ProviderTailscale, "onat@github"); !bound {
+		t.Fatal("identity not reported bound")
+	}
+	other, _, err := s.WebLoginIdentity(ctx, ProviderTailscale, "onat@github", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndSession(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AuthenticateSession(ctx, other); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ended session: err = %v", err)
+	}
+	if _, _, err := s.AuthenticateSession(ctx, secret); err != nil {
+		t.Fatalf("ending one session ended another: %v", err)
 	}
 }

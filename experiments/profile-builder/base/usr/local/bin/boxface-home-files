@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+src="${BOXFACE_HOME_FILES:-/nix/home-files}"
+state="$HOME/.local/state/boxface"
+mkdir -p "$state"
+report="$state/home-files.tmp"
+: > "$report"
+
+cd "$src/"
+find . \( -type l -o -type f \) -print | sort | while IFS= read -r rel; do
+  rel=${rel#./}
+  target="$HOME/$rel"
+  link="$src/$rel"
+  if [ -L "$target" ]; then
+    case "$(readlink "$target")" in
+      "$src"/* | /nix/store/*)
+        [ "$(readlink "$target")" = "$link" ] || ln -sfn "$link" "$target"
+        echo "linked $rel" >> "$report"
+        continue
+        ;;
+    esac
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    echo "skipped $rel: a file you own is already there" >> "$report"
+    continue
+  fi
+  mkdir -p "$(dirname "$target")"
+  ln -s "$link" "$target"
+  echo "linked $rel" >> "$report"
+done
+mv "$report" "$state/home-files"

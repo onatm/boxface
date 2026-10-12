@@ -54,7 +54,7 @@ The MVP is successful when this is reliable across real development days, not me
 
 - A repository need not contain Boxface configuration. Saved server defaults allow `boxfacectl create NAME` with no supplied file.
 - The CLI is the terminal path; the web UI manages recipes, profiles, and environments and shows connection instructions.
-- Connecting to a stopped environment reports that it is stopped; starting is explicit.
+- Connecting to a stopped environment starts it on the same image, then connects; nothing starts without a client request.
 - Previews open on the tablet through a loopback-bound forward, never a public URL.
 - When a recipe or profile changes, existing environments show that an update is available and are upgraded only on request.
 - Developers can install user-scoped dependencies and runtimes, including through mise, but cannot change the managed OS or declared toolset.

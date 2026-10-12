@@ -1,0 +1,78 @@
+#!/bin/sh
+set -eu
+
+status=failed
+error="the build stopped early"
+home_path=""
+closure_mib=0
+commit=""
+log=/tmp/build.log
+: > "$log"
+
+report() {
+  printf '{"status":"%s","error":"%s","home_path":"%s","closure_mib":%s,"dotfiles_commit":"%s"}\n' \
+    "$status" "$(printf %s "$error" | tr -d '"\\' | tr '\n' ' ')" "$home_path" "$closure_mib" "$commit" > /tmp/result
+  tail -n 200 "$log" >> /tmp/result
+  head -c 65536 /tmp/result | dd of=/dev/vde conv=notrunc status=none || true
+  echo "BOXFACE-RESULT status=$status home_path=$home_path closure_mib=$closure_mib dotfiles_commit=$commit" > /dev/console 2>&1 || true
+}
+trap report EXIT
+step() { echo "== $1" >> "$log"; error="$2"; }
+
+step "preparing the build disks" "could not prepare the build disks"
+mkdir -p /nix /input
+blkid /dev/vdb > /dev/null 2>&1 || mkfs.ext4 -q -L boxface-nix /dev/vdb
+mount -o noatime /dev/vdb /nix
+mount -o ro /dev/vdc /input
+mkdir -p /nix/.tmp /nix/.home
+export HOME=/nix/.home TMPDIR=/nix/.tmp XDG_CACHE_HOME=/nix/.home/.cache
+
+step "waiting for the network" "the network did not come up"
+for _ in $(seq 1 30); do
+  curl -fsS -o /dev/null https://cache.nixos.org/nix-cache-info && break
+  sleep 1
+done
+
+flake=/input/flake
+[ -d "$flake" ] || flake=/input/profile
+step "building the profile" "nix build failed"
+nix build "path:$flake#homeConfigurations.dev.activationPackage" -o /nix/.home/generation >> "$log" 2>&1
+
+out=/nix/.boxface-out
+rm -rf "$out"
+mkdir -p "$out/store" "$out/boxface/dotfiles"
+if [ -f /input/dotfiles-repo ]; then
+  step "fetching the dotfiles" "could not fetch the dotfiles repository"
+  repo="$(cat /input/dotfiles-repo)"
+  ref="$(cat /input/dotfiles-ref)"
+  rm -rf /nix/.tmp/dotfiles
+  if [ -n "$ref" ]; then
+    git clone --quiet --depth 1 --branch "$ref" -- "$repo" /nix/.tmp/dotfiles >> "$log" 2>&1 \
+      || { git clone --quiet -- "$repo" /nix/.tmp/dotfiles >> "$log" 2>&1 && git -C /nix/.tmp/dotfiles checkout --quiet --detach "$ref" -- >> "$log" 2>&1; }
+  else
+    git clone --quiet --depth 1 -- "$repo" /nix/.tmp/dotfiles >> "$log" 2>&1
+  fi
+  commit="$(git -C /nix/.tmp/dotfiles rev-parse HEAD)"
+  rm -rf /nix/.tmp/dotfiles/.git
+  cp -a /nix/.tmp/dotfiles/. "$out/boxface/dotfiles/"
+  rm -rf /nix/.tmp/dotfiles
+  echo "$commit" > "$out/boxface/dotfiles-revision"
+elif [ -d /input/dotfiles ]; then
+  cp -a /input/dotfiles/. "$out/boxface/dotfiles/"
+  cp /input/dotfiles-revision "$out/boxface/dotfiles-revision"
+else
+  echo none > "$out/boxface/dotfiles-revision"
+fi
+
+step "packing the profile drive" "could not pack the profile drive"
+home_path=$(readlink -f /nix/.home/generation/home-path)
+home_files=$(readlink -f /nix/.home/generation/home-files)
+nix-store -qR "$home_path" "$home_files" > /nix/.tmp/closure.txt
+while read -r path; do cp -al "$path" "$out/store/"; done < /nix/.tmp/closure.txt
+ln -s "$home_path" "$out/profile"
+ln -s "$home_files" "$out/home-files"
+closure_mib=$(du -sm "$out/store" | cut -f1)
+mkfs.ext4 -q -L boxface-profile -d "$out" /dev/vdd
+rm -rf "$out"
+status=ok
+error=""

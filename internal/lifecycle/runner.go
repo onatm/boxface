@@ -60,6 +60,7 @@ type Runner struct {
 	db         *sql.DB
 	worker     Worker
 	RetryDelay time.Duration
+	Started    func(ctx context.Context, environmentID string)
 
 	mu     sync.Mutex
 	active map[string]bool
@@ -183,6 +184,9 @@ func (r *Runner) execute(id string) error {
 		if _, err := r.db.ExecContext(ctx, `INSERT INTO operation_steps (operation_id, step, completed_at) VALUES (?, ?, ?)`, id, s.name, timestamp()); err != nil {
 			return err
 		}
+		if s.name == startVM.name && r.Started != nil {
+			r.Started(ctx, j.env.EnvironmentID)
+		}
 	}
 	return r.succeed(ctx, j, k)
 }
@@ -205,20 +209,27 @@ func (r *Runner) runStep(ctx context.Context, s step, j job) error {
 func (r *Runner) load(ctx context.Context, id string) (job, error) {
 	j := job{id: id}
 	var params string
-	err := r.db.QueryRowContext(ctx, `SELECT o.type, o.params, e.id, e.image_id, e.vcpus, e.memory_mib, d.id, d.size_gib
+	err := r.db.QueryRowContext(ctx, `SELECT o.type, o.params, e.id, e.image_id, e.vcpus, e.memory_mib, d.id, d.size_gib, coalesce(pr.build_key, '')
 		FROM operations o JOIN environments e ON e.id = o.target_id JOIN data_disks d ON d.environment_id = e.id
+		LEFT JOIN profile_revisions pr ON pr.id = e.profile_revision_id
 		WHERE o.id = ?`, id).
-		Scan(&j.opType, &params, &j.env.EnvironmentID, &j.env.ImageID, &j.env.VCPUs, &j.env.MemoryMiB, &j.disk.DiskID, &j.disk.SizeGiB)
+		Scan(&j.opType, &params, &j.env.EnvironmentID, &j.env.ImageID, &j.env.VCPUs, &j.env.MemoryMiB, &j.disk.DiskID, &j.disk.SizeGiB, &j.env.ProfileID)
 	if err != nil {
 		return job{}, fmt.Errorf("load operation %s: %w", id, err)
 	}
 	if _, ok := kinds[j.opType]; !ok {
 		return job{}, fmt.Errorf("operation %s has unknown type %q", id, j.opType)
 	}
-	if j.opType != TypeCreate {
-		if err := json.Unmarshal([]byte(params), &j.params); err != nil {
+	if j.opType == TypeCreate {
+		var p createParams
+		if err := json.Unmarshal([]byte(params), &p); err != nil {
 			return job{}, fmt.Errorf("decode operation %s params: %w", id, err)
 		}
+		j.env.AuthorizedKeys = p.AuthorizedKeys
+	} else if err := json.Unmarshal([]byte(params), &j.params); err != nil {
+		return job{}, fmt.Errorf("decode operation %s params: %w", id, err)
+	} else {
+		j.env.AuthorizedKeys = j.params.AuthorizedKeys
 	}
 	j.env.DiskID = j.disk.DiskID
 	j.disk.EnvironmentID = j.env.EnvironmentID

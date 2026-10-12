@@ -10,16 +10,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 
 	"github.com/onatm/boxface/internal/client"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
 	"golang.org/x/term"
 )
@@ -27,10 +33,12 @@ import (
 const usage = `usage: boxfacectl [--json] <command> [arguments]
 
 commands:
-  login --server URL [--code CODE]
-  image import SOURCE
+  login URL [--code CODE]
+  image import SOURCE [--alias NAME]
   image list
-  create NAME --image ID [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
+  image delete ID
+  create NAME [--profile NAME] [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
+  connect NAME [--session NAME] [--forward PORT[:GUESTPORT]]...
   list
   inspect NAME
   start NAME [--no-wait]
@@ -61,6 +69,8 @@ type cli struct {
 	configPath  string
 	json        bool
 	newKey      func() string
+	ssh         func(args, env []string) error
+	portFree    func(port int) bool
 }
 
 func main() {
@@ -73,8 +83,26 @@ func main() {
 		interactive: term.IsTerminal(int(os.Stdin.Fd())),
 		configPath:  defaultConfigPath(),
 		newKey:      randomKey,
+		ssh:         runSSH,
+		portFree:    portFree,
 	}
 	os.Exit(c.run(ctx, os.Args[1:]))
+}
+
+func portFree(port int) bool {
+	l, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	l.Close()
+	return true
+}
+
+func runSSH(args, env []string) error {
+	cmd := exec.Command("ssh", args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	cmd.Env = append(os.Environ(), env...)
+	return cmd.Run()
 }
 
 func defaultConfigPath() string {
@@ -132,12 +160,22 @@ func (c *cli) dispatch(ctx context.Context, command string, args []string) error
 		if len(args) == 1 && args[0] == "list" {
 			return c.imageList(ctx)
 		}
-		if len(args) == 2 && args[0] == "import" {
-			return c.imageImport(ctx, args[1])
+		if len(args) > 0 && args[0] == "import" {
+			return c.imageImport(ctx, args[1:])
+		}
+		if len(args) == 2 && args[0] == "delete" {
+			return c.imageDelete(ctx, args[1])
 		}
 		return errUsage
 	case "create":
 		return c.create(ctx, args)
+	case "connect":
+		return c.connect(ctx, args)
+	case "tunnel":
+		if len(args) != 1 {
+			return errUsage
+		}
+		return c.tunnel(ctx, args[0])
 	case "list":
 		return c.list(ctx)
 	case "inspect":
@@ -216,8 +254,12 @@ func (c *cli) login(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	server := fs.String("server", "", "Boxface API URL")
 	code := fs.String("code", "", "one-time login code from boxface-api bootstrap")
-	if rest, err := parse(fs, args); err != nil || len(rest) != 0 {
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) > 1 || (len(rest) == 1 && *server != "") {
 		return errUsage
+	}
+	if len(rest) == 1 {
+		*server = rest[0]
 	}
 	if *server == "" {
 		cfg, err := c.loadConfig()
@@ -226,15 +268,26 @@ func (c *cli) login(ctx context.Context, args []string) error {
 		}
 		*server = cfg.Server
 	}
+	api := client.New(*server, "")
+	var token string
 	if *code == "" {
-		var err error
-		if *code, err = c.prompt("Login code: ", "login code"); err != nil {
+		token, err = api.Login(ctx, "", deviceName())
+		var apiErr *client.Error
+		if err != nil && !(errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized) {
 			return err
 		}
+		if err == nil {
+			fmt.Fprintln(c.stderr, "signed in with your Tailscale login")
+		} else {
+			if *code, err = c.prompt("Login code: ", "login code"); err != nil {
+				return err
+			}
+		}
 	}
-	token, err := client.New(*server, "").Login(ctx, *code)
-	if err != nil {
-		return err
+	if token == "" {
+		if token, err = api.Login(ctx, *code, deviceName()); err != nil {
+			return err
+		}
 	}
 	b, _ := json.MarshalIndent(config{Server: *server, Token: token}, "", "  ")
 	if err := os.MkdirAll(filepath.Dir(c.configPath), 0o700); err != nil {
@@ -244,10 +297,53 @@ func (c *cli) login(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.stderr, "logged in to %s\n", *server)
+	if err := c.registerDevice(ctx, client.New(*server, token)); err != nil {
+		return fmt.Errorf("logged in, but could not register this device's SSH key: %w", err)
+	}
 	return nil
 }
 
-func (c *cli) imageImport(ctx context.Context, source string) error {
+func deviceName() string {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "boxfacectl"
+	}
+	if len(host) > 64 {
+		host = host[:64]
+	}
+	return host
+}
+
+func (c *cli) registerDevice(ctx context.Context, api *client.Client) error {
+	path := filepath.Join(filepath.Dir(c.configPath), "id_ed25519")
+	host := deviceName()
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		if out, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "boxfacectl@"+host, "-f", path).CombinedOutput(); err != nil {
+			return fmt.Errorf("ssh-keygen: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+	} else if err != nil {
+		return err
+	}
+	pub, err := os.ReadFile(path + ".pub")
+	if err != nil {
+		return err
+	}
+	k, err := api.AddSSHKey(ctx, host, string(pub))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stderr, "registered SSH key %s as %s\n", k.Fingerprint, k.Name)
+	return nil
+}
+
+func (c *cli) imageImport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("image import", flag.ContinueOnError)
+	alias := fs.String("alias", "", "also point this image alias at the image, such as main")
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) != 1 {
+		return errUsage
+	}
+	source := rest[0]
 	api, err := c.client()
 	if err != nil {
 		return err
@@ -256,6 +352,14 @@ func (c *cli) imageImport(ctx context.Context, source string) error {
 	img, err := api.ImportImage(ctx, source)
 	if err != nil {
 		return err
+	}
+	if *alias != "" {
+		if err := api.SetImageAlias(ctx, *alias, img.ID); err != nil {
+			return err
+		}
+		if !slices.Contains(img.Aliases, *alias) {
+			img.Aliases = append(img.Aliases, *alias)
+		}
 	}
 	c.output(img, func(w io.Writer) { fmt.Fprintf(w, "%s  %s\n", img.ID, img.Digest) })
 	return nil
@@ -272,25 +376,38 @@ func (c *cli) imageList(ctx context.Context) error {
 	}
 	c.output(list, func(w io.Writer) {
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tSTATUS\tDIGEST\tCREATED")
+		fmt.Fprintln(tw, "ID\tALIASES\tSTATUS\tDIGEST\tCREATED")
 		for _, img := range list {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", img.ID, img.Status, img.Digest, img.CreatedAt)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", img.ID, strings.Join(img.Aliases, ","), img.Status, img.Digest, img.CreatedAt)
 		}
 		tw.Flush()
 	})
 	return nil
 }
 
+func (c *cli) imageDelete(ctx context.Context, id string) error {
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	if err := api.RemoveImage(ctx, id); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stderr, "deleted image %s\n", id)
+	return nil
+}
+
 func (c *cli) create(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	req := lifecycle.CreateRequest{}
-	fs.StringVar(&req.ImageID, "image", "", "image ID")
-	fs.IntVar(&req.VCPUs, "vcpus", 2, "vCPUs")
-	fs.IntVar(&req.MemoryMiB, "memory-mib", 2048, "guest memory in MiB")
-	fs.IntVar(&req.DiskGiB, "disk-gib", 20, "data disk size in GiB")
+	fs.StringVar(&req.ImageID, "image", "", "image ID or alias; the server default when omitted")
+	fs.StringVar(&req.Profile, "profile", "", "profile name; the server default (main) when omitted")
+	fs.IntVar(&req.VCPUs, "vcpus", 0, "vCPUs; the server default when omitted")
+	fs.IntVar(&req.MemoryMiB, "memory-mib", 0, "guest memory in MiB; the server default when omitted")
+	fs.IntVar(&req.DiskGiB, "disk-gib", 0, "data disk size in GiB; the server default when omitted")
 	noWait := fs.Bool("no-wait", false, "return once the operation is accepted")
 	rest, err := parse(fs, args)
-	if err != nil || len(rest) != 1 || req.ImageID == "" {
+	if err != nil || len(rest) != 1 {
 		return errUsage
 	}
 	req.Name = rest[0]
@@ -366,13 +483,24 @@ func printEnvironment(w io.Writer, e lifecycle.Environment) {
 	for _, row := range [][2]string{
 		{"name", e.Name}, {"id", e.ID}, {"state", e.ObservedState}, {"desired", e.DesiredState},
 		{"image", e.ImageID}, {"vcpus", fmt.Sprint(e.VCPUs)}, {"memory", fmt.Sprintf("%d MiB", e.MemoryMiB)},
-		{"disk", e.DiskID + " (" + e.DiskRetention + ")"}, {"error", e.Error},
+		{"disk", e.DiskID + " (" + e.DiskRetention + ")"}, {"profile", profileSummary(e)}, {"error", e.Error},
 	} {
 		if row[1] != "" {
 			fmt.Fprintf(tw, "%s:\t%s\n", row[0], row[1])
 		}
 	}
 	tw.Flush()
+}
+
+func profileSummary(e lifecycle.Environment) string {
+	if e.Profile == "" {
+		return ""
+	}
+	s := fmt.Sprintf("%s revision %d", e.Profile, e.ProfileNumber)
+	if e.ProfileLatest > e.ProfileNumber {
+		s += fmt.Sprintf(" (revision %d is ready; recreate to use it)", e.ProfileLatest)
+	}
+	return s
 }
 
 func (c *cli) startStop(ctx context.Context, command string, args []string) error {
@@ -469,11 +597,7 @@ func (c *cli) operation(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Accepted, noWait bool) error {
-	if noWait {
-		c.output(acc, func(w io.Writer) { fmt.Fprintf(w, "operation %s accepted\n", acc.OperationID) })
-		return nil
-	}
+func (c *cli) wait(ctx context.Context, api *client.Client, acc lifecycle.Accepted) error {
 	fmt.Fprintf(c.stderr, "operation %s\n", acc.OperationID)
 	op, err := api.Follow(ctx, acc.OperationID, func(step string) { fmt.Fprintf(c.stderr, "  done: %s\n", step) })
 	if errors.Is(err, context.Canceled) {
@@ -486,10 +610,172 @@ func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Acce
 	if op.State != "succeeded" {
 		return fmt.Errorf("operation %s %s: %s", op.ID, op.State, op.ErrorMessage)
 	}
+	return nil
+}
+
+func (c *cli) finish(ctx context.Context, api *client.Client, acc lifecycle.Accepted, noWait bool) error {
+	if noWait {
+		c.output(acc, func(w io.Writer) { fmt.Fprintf(w, "operation %s accepted\n", acc.OperationID) })
+		return nil
+	}
+	if err := c.wait(ctx, api, acc); err != nil {
+		return err
+	}
 	env, err := api.Environment(context.WithoutCancel(ctx), acc.EnvironmentID)
 	if err != nil {
 		return err
 	}
 	c.output(env, func(w io.Writer) { printEnvironment(w, env) })
 	return nil
+}
+
+func (c *cli) connect(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	session := fs.String("session", "main", "tmux session to create or attach to")
+	var forwards []string
+	fs.Func("forward", "forward localhost:PORT on this machine to localhost:GUESTPORT in the environment, as PORT or PORT:GUESTPORT; repeatable", func(v string) error {
+		f, err := forwardSpec(v)
+		forwards = append(forwards, f)
+		return err
+	})
+	rest, err := parse(fs, args)
+	if err != nil || len(rest) != 1 || !sessionPattern.MatchString(*session) {
+		return errUsage
+	}
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	env, err := c.resolve(ctx, api, rest[0])
+	if err != nil {
+		return err
+	}
+	switch env.ObservedState {
+	case "running":
+	case "deleted":
+		return fmt.Errorf("%s is deleted", env.Name)
+	default:
+		fmt.Fprintf(c.stderr, "%s is %s; starting it\n", env.Name, env.ObservedState)
+		acc, err := api.Start(ctx, c.newKey(), env.ID)
+		if err != nil {
+			return err
+		}
+		if err := c.wait(ctx, api, acc); err != nil {
+			return err
+		}
+	}
+	conn, err := api.Connection(ctx, env.ID)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(c.configPath)
+	if pub, err := os.ReadFile(filepath.Join(dir, "id_ed25519.pub")); err == nil && len(conn.Fingerprints) > 0 {
+		if _, fp, err := sshkeys.Parse(string(pub)); err == nil && !slices.Contains(conn.Fingerprints, fp) {
+			return fmt.Errorf("%s does not accept this device's key yet: keys apply when an environment starts, and %s started before this device logged in.\nrestart it to apply the key: boxfacectl stop %s && boxfacectl connect %s", env.Name, env.Name, env.Name, env.Name)
+		}
+	}
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := pinHostKey(knownHosts, env.ID, conn.HostKey); err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	sshArgs := []string{
+		"-i", filepath.Join(dir, "id_ed25519"),
+		"-o", "IdentitiesOnly=yes",
+		"-o", "UserKnownHostsFile=\"" + knownHosts + "\"",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "HostKeyAlias=" + env.ID,
+		"-o", "ProxyCommand=" + shellQuote(self) + " tunnel " + env.ID,
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
+	}
+	for _, port := range loginCallbackPorts {
+		f := fmt.Sprintf("localhost:%d:localhost:%d", port, port)
+		if slices.Contains(forwards, f) {
+			continue
+		}
+		if c.portFree(port) {
+			forwards = append(forwards, f)
+		} else {
+			fmt.Fprintf(c.stderr, "localhost:%d is in use here, so agent sign-ins that redirect to it will not reach %s\n", port, env.Name)
+		}
+	}
+	for _, f := range forwards {
+		sshArgs = append(sshArgs, "-L", f)
+	}
+	sshArgs = append(sshArgs, "-t", conn.User+"@"+env.Name, "tmux", "new-session", "-A", "-s", *session)
+	err = c.ssh(sshArgs, []string{"BOXFACE_CONFIG=" + c.configPath})
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 255 {
+		return fmt.Errorf("connection to %s lost or refused; run boxfacectl connect %s to reattach", env.Name, env.Name)
+	}
+	return err
+}
+
+var sessionPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+var loginCallbackPorts = []int{1455}
+
+func forwardSpec(v string) (string, error) {
+	local, guest, found := strings.Cut(v, ":")
+	if !found {
+		guest = local
+	}
+	for _, p := range []string{local, guest} {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("invalid port %q in --forward %s", p, v)
+		}
+	}
+	return "localhost:" + local + ":localhost:" + guest, nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func pinHostKey(path, environmentID, hostKey string) error {
+	if hostKey == "" || strings.ContainsAny(hostKey, "\r\n") {
+		return errors.New("server returned an invalid host key")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if line != "" && !strings.HasPrefix(line, environmentID+" ") {
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, environmentID+" "+hostKey)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (c *cli) tunnel(ctx context.Context, environmentID string) error {
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	conn, err := api.Tunnel(ctx, environmentID)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	go func() {
+		io.Copy(conn, c.stdin)
+		conn.Close()
+	}()
+	io.Copy(c.stdout, conn)
+	return ctx.Err()
 }

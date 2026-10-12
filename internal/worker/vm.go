@@ -21,7 +21,22 @@ import (
 const (
 	readyPort        = 1024
 	memoryOverheadMi = 256
+	keysImage        = "authorized_keys.img"
 )
+
+func keysImageContent(keys []string) ([]byte, error) {
+	if len(keys) == 0 {
+		return nil, errors.New("no authorized keys for the VM")
+	}
+	for _, k := range keys {
+		if k == "" || strings.ContainsAny(k, "\r\n\x00") {
+			return nil, errors.New("authorized key must be a single non-empty line")
+		}
+	}
+	content := []byte(strings.Join(keys, "\n") + "\n")
+	size := (len(content) + 4095) / 4096 * 4096
+	return append(content, make([]byte, size-len(content))...), nil
+}
 
 func unitName(environmentID string) string { return "boxface-vm-" + environmentID + ".service" }
 
@@ -53,16 +68,21 @@ func (h *Host) firecrackerConfig(spec lifecycle.VMSpec, a addressing) ([]byte, e
 		IsRootDevice bool   `json:"is_root_device"`
 		IsReadOnly   bool   `json:"is_read_only"`
 	}
+	drives := []drive{
+		{"rootfs", filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"), true, true},
+		{"data", h.diskPath(spec.DiskID), false, false},
+		{"keys", filepath.Join(dir, keysImage), false, true},
+	}
+	if spec.ProfileID != "" {
+		drives = append(drives, drive{"profile", h.profilePath(spec.ProfileID), false, true})
+	}
 	config := map[string]any{
 		"boot-source": map[string]any{
 			"kernel_image_path": filepath.Join(h.cfg.ImagesDir, spec.ImageID, "vmlinux"),
 			"boot_args": fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off net.ifnames=0 ip=%s::%s:255.255.255.252::eth0:off",
 				a.Guest, a.Host),
 		},
-		"drives": []drive{
-			{"rootfs", filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"), true, true},
-			{"data", h.diskPath(spec.DiskID), false, false},
-		},
+		"drives":         drives,
 		"machine-config": map[string]any{"vcpu_count": spec.VCPUs, "mem_size_mib": spec.MemoryMiB},
 		"network-interfaces": []map[string]any{{
 			"iface_id":      "eth0",
@@ -80,6 +100,11 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 			return err
 		}
 	}
+	if spec.ProfileID != "" {
+		if err := validID(spec.ProfileID); err != nil {
+			return err
+		}
+	}
 	unit := unitName(spec.EnvironmentID)
 	if active, err := unitActive(ctx, unit); err != nil {
 		return err
@@ -91,11 +116,15 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 	if err != nil {
 		return fmt.Errorf("environment %s network: %w", spec.EnvironmentID, err)
 	}
-	for _, p := range []string{
+	required := []string{
 		filepath.Join(h.cfg.ImagesDir, spec.ImageID, "vmlinux"),
 		filepath.Join(h.cfg.ImagesDir, spec.ImageID, "rootfs.ext4"),
 		h.diskPath(spec.DiskID),
-	} {
+	}
+	if spec.ProfileID != "" {
+		required = append(required, h.profilePath(spec.ProfileID))
+	}
+	for _, p := range required {
 		if _, err := os.Stat(p); err != nil {
 			return err
 		}
@@ -107,6 +136,19 @@ func (h *Host) StartVM(ctx context.Context, spec lifecycle.VMSpec) error {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "firecracker.json"), config, 0o644); err != nil {
+		return err
+	}
+	keys, err := keysImageContent(spec.AuthorizedKeys)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, keysImage+".tmp"), keys, 0o640); err != nil {
+		return err
+	}
+	if err := os.Chown(filepath.Join(dir, keysImage+".tmp"), h.vmUID, h.vmGID); err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(dir, keysImage+".tmp"), filepath.Join(dir, keysImage)); err != nil {
 		return err
 	}
 	for _, name := range []string{"ready", "api.sock", "vsock.sock"} {
@@ -232,41 +274,57 @@ func (h *Host) listen(environmentID string) error {
 		return nil
 	}
 	dir := h.envDir(environmentID)
-	path := filepath.Join(dir, "vsock.sock_"+strconv.Itoa(readyPort))
-	os.Remove(path)
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return fmt.Errorf("readiness listener: %w", err)
-	}
-	if err := os.Chown(path, h.vmUID, h.vmGID); err != nil {
-		l.Close()
-		return err
-	}
-	h.listeners[environmentID] = l
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			msg, _ := io.ReadAll(io.LimitReader(conn, 64))
-			conn.Close()
-			if strings.Contains(string(msg), "ready") {
-				os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644)
-			}
+	ready := func(conn net.Conn) {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		msg, _ := io.ReadAll(io.LimitReader(conn, 64))
+		conn.Close()
+		if strings.Contains(string(msg), "ready") {
+			os.WriteFile(filepath.Join(dir, "ready"), nil, 0o644)
 		}
-	}()
+	}
+	credentials := func(conn net.Conn) { h.broker.serve(environmentID, conn) }
+	var ls []net.Listener
+	for _, p := range []struct {
+		port   int
+		handle func(net.Conn)
+	}{{readyPort, ready}, {brokerPort, credentials}} {
+		path := filepath.Join(dir, "vsock.sock_"+strconv.Itoa(p.port))
+		os.Remove(path)
+		l, err := net.Listen("unix", path)
+		if err == nil {
+			err = os.Chown(path, h.vmUID, h.vmGID)
+		}
+		if err != nil {
+			for _, open := range append(ls, l) {
+				if open != nil {
+					open.Close()
+				}
+			}
+			return fmt.Errorf("vsock listener on port %d: %w", p.port, err)
+		}
+		ls = append(ls, l)
+		go func() {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go p.handle(conn)
+			}
+		}()
+	}
+	h.listeners[environmentID] = ls
 	return nil
 }
 
 func (h *Host) stopListening(environmentID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if l, ok := h.listeners[environmentID]; ok {
+	for _, l := range h.listeners[environmentID] {
 		l.Close()
-		delete(h.listeners, environmentID)
 	}
+	delete(h.listeners, environmentID)
+	h.broker.clear(environmentID)
 }
 
 func (h *Host) recoverListeners(ctx context.Context) error {

@@ -35,6 +35,7 @@
               cargo
               gcc
               git
+              tmux
               chezmoi
               cacert
             ];

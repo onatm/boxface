@@ -13,6 +13,10 @@ check() {
 }
 call() { curl -sS --retry 30 --retry-connrefused --retry-delay 1 -H "Authorization: Bearer $token" "$@"; }
 field() { python3 -c "import json,sys; print(json.load(sys.stdin)$1)"; }
+keydir="$(mktemp -d)"
+ssh-keygen -q -t ed25519 -N '' -f "$keydir/key"
+key_id="$(call -X POST "$api/v1/ssh-keys" -d "{\"name\":\"acceptance-$run\",\"public_key\":\"$(cat "$keydir/key.pub")\"}" | field '["id"]')"
+trap 'call -X DELETE "$api/v1/ssh-keys/$key_id" > /dev/null; rm -rf "$keydir"' EXIT
 create() {
   call -X POST "$api/v1/environments" -H "Idempotency-Key: $1-$run" \
     -d "{\"name\":\"$1-$run\",\"image_id\":\"${2:-$image}\",\"vcpus\":1,\"memory_mib\":${3:-1024},\"disk_gib\":4}"

@@ -12,4 +12,10 @@ revision="$(cd "$here/dotfiles" && find . -type f -print0 | sort -z | xargs -0 s
 echo "$revision" > "$personal/usr/share/boxface/dotfiles-revision"
 echo "dotfiles revision: $revision"
 
-IMAGE_TREES="$personal $here/image" exec "$here/../gate-b/02-image.sh"
+run_tree="$WORK/run-tree"
+boxface_run="${BOXFACE_RUN:-$here/../../bin/linux-amd64/boxface-run}"
+[ -x "$boxface_run" ] || { echo "build boxface-run first (task build), or set BOXFACE_RUN" >&2; exit 1; }
+rm -rf "$run_tree"
+install -D -m 0755 "$boxface_run" "$run_tree/usr/local/bin/boxface-run"
+
+IMAGE_TREES="$personal $here/image $run_tree" exec "$here/../gate-b/02-image.sh"

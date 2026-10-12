@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,19 +23,21 @@ const (
 )
 
 type fakeWorker struct {
-	mu      sync.Mutex
-	calls   []string
-	disks   map[string]bool
-	vms     map[string]bool
-	block   map[string]chan struct{}
-	entered chan string
-	fail    map[string]error
-	flaky   map[string]int
-	active  map[string]bool
+	mu       sync.Mutex
+	calls    []string
+	disks    map[string]bool
+	keys     map[string][]string
+	profiles map[string]string
+	vms      map[string]bool
+	block    map[string]chan struct{}
+	entered  chan string
+	fail     map[string]error
+	flaky    map[string]int
+	active   map[string]bool
 }
 
 func newFakeWorker() *fakeWorker {
-	return &fakeWorker{disks: map[string]bool{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
+	return &fakeWorker{disks: map[string]bool{}, keys: map[string][]string{}, profiles: map[string]string{}, vms: map[string]bool{}, block: map[string]chan struct{}{}, entered: make(chan string, 16), fail: map[string]error{}, flaky: map[string]int{}}
 }
 
 func (f *fakeWorker) call(ctx context.Context, name string, apply func()) error {
@@ -79,7 +82,11 @@ func (f *fakeWorker) RemoveNetwork(ctx context.Context, id string) error {
 	return f.call(ctx, "RemoveNetwork", nil)
 }
 func (f *fakeWorker) StartVM(ctx context.Context, spec VMSpec) error {
-	return f.call(ctx, "StartVM", func() { f.vms[spec.EnvironmentID] = true })
+	return f.call(ctx, "StartVM", func() {
+		f.vms[spec.EnvironmentID] = true
+		f.keys[spec.EnvironmentID] = spec.AuthorizedKeys
+		f.profiles[spec.EnvironmentID] = spec.ProfileID
+	})
 }
 func (f *fakeWorker) StopVM(ctx context.Context, id string) error {
 	return f.call(ctx, "StopVM", func() { delete(f.vms, id) })
@@ -110,6 +117,9 @@ func openDB(t *testing.T) *sql.DB {
 	for _, q := range []string{
 		`INSERT INTO owners (id, name, created_at) VALUES ('owner-1', 'one', '2026-10-09T00:00:00Z'), ('owner-2', 'two', '2026-10-09T00:00:00Z')`,
 		`INSERT INTO images (id, digest, status, created_at) VALUES ('image-1', 'sha256:test', 'ready', '2026-10-09T00:00:00Z')`,
+		`INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at) VALUES
+			('key-1', 'owner-1', 'laptop', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPv/3an15p2WS8pllhCNT8+Ui5iCTCbODBLNGN4kKUba', 'fp-1', '2026-10-09T00:00:00Z'),
+			('key-2', 'owner-2', 'laptop', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPt5LCJRq9y4c8J1YZeCdDw7TP7B5LlgxGVVvhVUhQuN', 'fp-2', '2026-10-09T00:00:00Z')`,
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
@@ -509,9 +519,9 @@ func TestCreateValidation(t *testing.T) {
 		req  CreateRequest
 		want error
 	}{
-		"bad name":      {CreateRequest{Name: "Travel", ImageID: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
-		"no vcpus":      {CreateRequest{Name: "travel", ImageID: image, VCPUs: 0, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
-		"unknown image": {CreateRequest{Name: "travel", ImageID: "missing", VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrNotFound},
+		"bad name":       {CreateRequest{Name: "Travel", ImageID: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
+		"negative vcpus": {CreateRequest{Name: "travel", ImageID: image, VCPUs: -1, MemoryMiB: 512, DiskGiB: 1}, ErrInvalid},
+		"unknown image":  {CreateRequest{Name: "travel", ImageID: "missing", VCPUs: 1, MemoryMiB: 512, DiskGiB: 1}, ErrNotFound},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -576,5 +586,274 @@ func TestRetainedDiskCanBePurgedAfterDelete(t *testing.T) {
 	}
 	if _, err := s.Delete(context.Background(), owner, "", acc.EnvironmentID, true); !errors.Is(err, ErrEnvironmentDeleted) {
 		t.Fatalf("purge twice: err = %v", err)
+	}
+}
+
+func TestCreateUsesDefaultsAliasesAndOwnerKeys(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "first"}); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), `"main"`) {
+		t.Fatalf("create without a main image: err = %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO images (id, digest, status, created_at) VALUES ('image-2', 'sha256:two', 'ready', '2026-10-09T00:00:00Z')`,
+		`INSERT INTO image_aliases (name, image_id, updated_at) VALUES ('main', 'image-1', '2026-10-09T00:00:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := s.Create(ctx, owner, "first-key", CreateRequest{Name: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	env := mustEnvironment(t, s, first.EnvironmentID)
+	if env.ImageID != image || env.VCPUs != 2 || env.MemoryMiB != 2048 || env.ObservedState != "running" {
+		t.Fatalf("environment from built-in defaults = %+v", env)
+	}
+	if keys := w.keys[env.ID]; len(keys) != 1 || !strings.HasPrefix(keys[0], "ssh-ed25519 ") {
+		t.Fatalf("VM keys = %q", keys)
+	}
+
+	if _, err := db.Exec(`UPDATE image_aliases SET image_id = 'image-2' WHERE name = 'main'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{Image: "main", VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := s.Create(ctx, owner, "first-key", CreateRequest{Name: "first"})
+	if err != nil || retry != first {
+		t.Fatalf("retry after defaults changed = %+v, %v; want %+v", retry, err, first)
+	}
+	second, err := s.Create(ctx, owner, "", CreateRequest{Name: "second", MemoryMiB: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, second.EnvironmentID); env.ImageID != "image-2" || env.VCPUs != 1 || env.MemoryMiB != 1024 {
+		t.Fatalf("environment from saved defaults = %+v", env)
+	}
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.ImageID != image {
+		t.Fatalf("moving main changed an existing environment: %+v", env)
+	}
+	if d, err := s.Defaults(ctx, otherOwner); err != nil || d != builtinDefaults {
+		t.Fatalf("other owner's defaults = %+v, %v", d, err)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{VCPUs: 1, MemoryMiB: 512, DiskGiB: 4}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("defaults without image: err = %v", err)
+	}
+}
+
+func TestCreateWithoutSSHKeysRejected(t *testing.T) {
+	db := openDB(t)
+	s, _, _ := newService(t, db, newFakeWorker())
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(context.Background(), owner, "", travel); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "boxfacectl login") {
+		t.Fatalf("err = %v", err)
+	}
+	if n := count(t, db, `SELECT count(*) FROM environments`); n != 0 {
+		t.Fatalf("environments = %d after rejected create", n)
+	}
+}
+
+func TestResumedCreateSeedsKeysRecordedAtSubmit(t *testing.T) {
+	db := openDB(t)
+	first := newFakeWorker()
+	first.block["CreateDisk"] = make(chan struct{})
+	s1, r1, stopFirst := newService(t, db, first)
+	acc, err := s1.Create(context.Background(), owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-first.entered
+	stopFirst()
+	r1.Wait()
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	second := newFakeWorker()
+	s2, r2, _ := newService(t, db, second)
+	r2.Kick()
+	r2.Wait()
+	env := mustEnvironment(t, s2, acc.EnvironmentID)
+	if env.ObservedState != "running" || len(second.keys[env.ID]) != 1 {
+		t.Fatalf("environment %+v, VM keys %q", env, second.keys[env.ID])
+	}
+}
+
+func TestStartUsesTheOwnersCurrentKeys(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+	acc, err := s.Create(ctx, owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Stop(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := db.Exec(`INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at) VALUES
+		('key-tablet', ?, 'tablet', 'ssh-ed25519 AAAAtablet', 'SHA256:tablet', '2026-10-10T00:00:00Z')`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if keys := w.keys[acc.EnvironmentID]; len(keys) != 2 || keys[1] != "ssh-ed25519 AAAAtablet" {
+		t.Fatalf("keys after a new device registered = %q", keys)
+	}
+
+	if _, err := s.Stop(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ? AND id <> 'key-tablet'`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if keys := w.keys[acc.EnvironmentID]; len(keys) != 1 || keys[0] != "ssh-ed25519 AAAAtablet" {
+		t.Fatalf("keys after removing a key = %q", keys)
+	}
+
+	if _, err := db.Exec(`DELETE FROM ssh_keys WHERE owner_id = ?`, owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Start(ctx, owner, "", acc.EnvironmentID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("start with no keys: err = %v", err)
+	}
+}
+
+func TestStartedHookRunsAfterStartVM(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	var mu sync.Mutex
+	var started []string
+	r.Started = func(_ context.Context, id string) {
+		mu.Lock()
+		defer mu.Unlock()
+		started = append(started, id+" after "+w.callLog()[len(w.callLog())-1])
+	}
+	acc, err := s.Create(context.Background(), owner, "", travel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Stop(context.Background(), owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Start(context.Background(), owner, "", acc.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	want := acc.EnvironmentID + " after StartVM"
+	if len(started) != 2 || started[0] != want || started[1] != want {
+		t.Fatalf("started = %v", started)
+	}
+}
+
+func TestCreateResolvesProfiles(t *testing.T) {
+	db := openDB(t)
+	w := newFakeWorker()
+	s, r, _ := newService(t, db, w)
+	ctx := context.Background()
+
+	plain, err := s.Create(ctx, owner, "", CreateRequest{Name: "plain", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, plain.EnvironmentID); env.Profile != "" || w.profiles[plain.EnvironmentID] != "" {
+		t.Fatalf("without a main profile: %+v, drive %q", env, w.profiles[plain.EnvironmentID])
+	}
+
+	for _, q := range []string{
+		`INSERT INTO profiles (id, owner_id, name, created_at) VALUES ('prof-main', 'owner-1', 'main', 'x'), ('prof-tools', 'owner-1', 'tools', 'x')`,
+		`INSERT INTO profile_revisions (id, profile_id, number, spec, build_key, state, created_at, updated_at) VALUES
+			('rev-1', 'prof-main', 1, '{}', 'key-one', 'pending', 'x', 'x'),
+			('rev-t', 'prof-tools', 1, '{}', 'key-tools', 'ready', 'x', 'x')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "early", ImageID: image}); !errors.Is(err, ErrProfileNotReady) {
+		t.Fatalf("default profile still building: err = %v", err)
+	}
+	db.Exec(`UPDATE profile_revisions SET state = 'ready' WHERE id = 'rev-1'`)
+	first, err := s.Create(ctx, owner, "", CreateRequest{Name: "first", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.Profile != "main" || env.ProfileNumber != 1 || env.ProfileLatest != 1 || w.profiles[first.EnvironmentID] != "key-one" {
+		t.Fatalf("with main ready: %+v, drive %q", env, w.profiles[first.EnvironmentID])
+	}
+
+	db.Exec(`INSERT INTO profile_revisions (id, profile_id, number, spec, build_key, state, created_at, updated_at) VALUES ('rev-2', 'prof-main', 2, '{}', 'key-two', 'ready', 'x', 'x')`)
+	second, err := s.Create(ctx, owner, "", CreateRequest{Name: "second", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, first.EnvironmentID); env.ProfileNumber != 1 || env.ProfileLatest != 2 {
+		t.Fatalf("main moved but first should stay on revision 1: %+v", env)
+	}
+	if env := mustEnvironment(t, s, second.EnvironmentID); env.ProfileNumber != 2 || w.profiles[second.EnvironmentID] != "key-two" {
+		t.Fatalf("second = %+v, drive %q", env, w.profiles[second.EnvironmentID])
+	}
+	if _, err := s.Stop(ctx, owner, "", first.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if _, err := s.Start(ctx, owner, "", first.EnvironmentID); err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if w.profiles[first.EnvironmentID] != "key-one" {
+		t.Fatalf("restart attached %q, want the recorded revision", w.profiles[first.EnvironmentID])
+	}
+
+	if _, err := s.Create(ctx, owner, "", CreateRequest{Name: "x", ImageID: image, Profile: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("explicit missing profile: err = %v", err)
+	}
+	tools, err := s.Create(ctx, owner, "", CreateRequest{Name: "tools", ImageID: image, Profile: "tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, tools.EnvironmentID); env.Profile != "tools" {
+		t.Fatalf("explicit profile = %+v", env)
+	}
+	if err := s.SetDefaults(ctx, owner, Defaults{Image: image, VCPUs: 1, MemoryMiB: 512, DiskGiB: 4, Profile: "tools"}); err != nil {
+		t.Fatal(err)
+	}
+	viaDefault, err := s.Create(ctx, owner, "", CreateRequest{Name: "viadefault", ImageID: image})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Wait()
+	if env := mustEnvironment(t, s, viaDefault.EnvironmentID); env.Profile != "tools" {
+		t.Fatalf("default profile = %+v", env)
+	}
+	if _, err := s.Create(ctx, otherOwner, "", CreateRequest{Name: "theirs", ImageID: image, Profile: "main"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another owner used this owner's profile: err = %v", err)
 	}
 }

@@ -5,7 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
+	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +20,7 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/store"
 )
 
@@ -43,14 +48,27 @@ func (w *gatedWorker) StartVM(ctx context.Context, _ lifecycle.VMSpec) error {
 	}
 }
 
+type fakeGateway struct{}
+
+func (fakeGateway) Endpoint(context.Context, string) (netip.Addr, error) {
+	return netip.MustParseAddr("172.20.0.6"), nil
+}
+func (fakeGateway) HostKey(context.Context, string) (string, error) {
+	return "ssh-ed25519 AAAAhost", nil
+}
+
 type harness struct {
 	t         *testing.T
 	server    string
+	tailnet   string
+	authStore *auth.Store
 	code      string
 	importDir string
 	config    string
 	worker    *gatedWorker
 	runner    *lifecycle.Runner
+	sshCalls  [][]string
+	portBusy  bool
 }
 
 func newHarness(t *testing.T) *harness {
@@ -71,15 +89,29 @@ func newHarness(t *testing.T) *harness {
 		Auth:         authStore,
 		Lifecycle:    lifecycle.NewService(db, runner, lifecycle.Capacity{}),
 		Images:       images.NewRegistry(db, importDir, filepath.Join(dir, "images")),
+		SSHKeys:      sshkeys.NewStore(db),
+		Gateway:      fakeGateway{},
 		PollInterval: 10 * time.Millisecond,
+		DialGuest: func(context.Context, string) (net.Conn, error) {
+			guest, client := net.Pipe()
+			go func() { io.Copy(guest, guest); guest.Close() }()
+			return client, nil
+		},
 	}
-	srv := httptest.NewServer(s.Handler())
-	t.Cleanup(func() { srv.Close(); cancel(); runner.Wait(); db.Close() })
+	h := s.Handler()
+	srv := httptest.NewServer(h)
+	tailnet := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Tailscale-User-Login", "onat@github")
+		h.ServeHTTP(w, r)
+	}))
+	tailnet.Config.ConnContext = api.ViaTailscale
+	tailnet.Start()
+	t.Cleanup(func() { srv.Close(); tailnet.Close(); cancel(); runner.Wait(); db.Close() })
 	code, err := authStore.Bootstrap(context.Background(), "onat", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{t: t, server: srv.URL, code: code, importDir: importDir, config: filepath.Join(dir, "config", "config.json"), worker: w, runner: runner}
+	return &harness{t: t, server: srv.URL, tailnet: tailnet.URL, authStore: authStore, code: code, importDir: importDir, config: filepath.Join(dir, "Application Support", "config.json"), worker: w, runner: runner}
 }
 
 func (h *harness) run(ctx context.Context, stdin string, interactive bool, args ...string) (int, string, string) {
@@ -92,6 +124,11 @@ func (h *harness) run(ctx context.Context, stdin string, interactive bool, args 
 		interactive: interactive,
 		configPath:  h.config,
 		newKey:      randomKey,
+		ssh: func(args, env []string) error {
+			h.sshCalls = append(h.sshCalls, append(args, env...))
+			return nil
+		},
+		portFree: func(int) bool { return !h.portBusy },
 	}
 	code := c.run(ctx, args)
 	return code, stdout.String(), stderr.String()
@@ -191,7 +228,7 @@ func TestInterruptedFollowLeavesOperationRunning(t *testing.T) {
 
 func TestUsageAndLoginErrors(t *testing.T) {
 	h := newHarness(t)
-	for _, args := range [][]string{{}, {"bogus"}, {"create"}, {"create", "x"}, {"image", "import"}} {
+	for _, args := range [][]string{{}, {"bogus"}, {"create"}, {"create", "x", "y"}, {"image", "import"}, {"login", "a", "b"}} {
 		if code, _, _ := h.run(context.Background(), "", false, args...); code != exitUsage {
 			t.Fatalf("%v: exit %d, want usage", args, code)
 		}
@@ -204,5 +241,221 @@ func TestUsageAndLoginErrors(t *testing.T) {
 	}
 	if code, _, _ := h.run(context.Background(), h.code+"\n", true, "login", "--server", h.server); code != exitOK {
 		t.Fatalf("interactive login: exit %d", code)
+	}
+}
+
+func TestLoginRegistersDeviceKeyAndCreateUsesDefaults(t *testing.T) {
+	h := newHarness(t)
+	code, _, errOut := h.run(context.Background(), "", false, "login", h.server, "--code", h.code)
+	if code != exitOK || !strings.Contains(errOut, "registered SSH key SHA256:") {
+		t.Fatalf("login: exit %d, %s", code, errOut)
+	}
+	keyPath := filepath.Join(filepath.Dir(h.config), "id_ed25519")
+	if info, err := os.Stat(keyPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("device key = %v, %v", info, err)
+	}
+	if code, _, errOut := h.run(context.Background(), "", false, "login", h.server, "--code", h.code); code != exitError || !strings.Contains(errOut, "unauthorized") {
+		t.Fatalf("reused code: exit %d, %s", code, errOut)
+	}
+
+	os.MkdirAll(filepath.Join(h.importDir, "base"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "base", "vmlinux"), []byte("kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "base", "rootfs.ext4"), []byte("rootfs"), 0o644)
+	h.ok("image", "import", "base", "--alias", "main")
+	if out := h.ok("image", "list"); !strings.Contains(out, "main") {
+		t.Fatalf("image list = %s", out)
+	}
+	var created lifecycle.Environment
+	if err := json.Unmarshal([]byte(h.ok("--json", "create", "travel")), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ObservedState != "running" || created.VCPUs != 2 || created.MemoryMiB != 2048 {
+		t.Fatalf("created = %+v", created)
+	}
+}
+
+func (h *harness) createMain() lifecycle.Environment {
+	h.t.Helper()
+	h.ok("login", h.server, "--code", h.code)
+	os.MkdirAll(filepath.Join(h.importDir, "base"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "base", "vmlinux"), []byte("kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "base", "rootfs.ext4"), []byte("rootfs"), 0o644)
+	h.ok("image", "import", "base", "--alias", "main")
+	var env lifecycle.Environment
+	if err := json.Unmarshal([]byte(h.ok("--json", "create", "travel")), &env); err != nil {
+		h.t.Fatal(err)
+	}
+	return env
+}
+
+func TestConnectStartsStoppedEnvironmentAndPinsHostKey(t *testing.T) {
+	h := newHarness(t)
+	env := h.createMain()
+	h.ok("stop", "travel")
+
+	code, _, errOut := h.run(context.Background(), "", false, "connect", "travel")
+	if code != exitOK || !strings.Contains(errOut, "travel is stopped; starting it") {
+		t.Fatalf("connect: exit %d, %s", code, errOut)
+	}
+	if out := h.ok("inspect", "travel"); !strings.Contains(out, "running") {
+		t.Fatalf("not started: %s", out)
+	}
+	if len(h.sshCalls) != 1 {
+		t.Fatalf("ssh calls = %v", h.sshCalls)
+	}
+	dir := filepath.Dir(h.config)
+	args := strings.Join(h.sshCalls[0], " ")
+	for _, want := range []string{
+		"-i " + filepath.Join(dir, "id_ed25519"),
+		`UserKnownHostsFile="` + filepath.Join(dir, "known_hosts") + `"`,
+		"StrictHostKeyChecking=yes",
+		"HostKeyAlias=" + env.ID,
+		" tunnel " + env.ID,
+		"ServerAliveInterval=15",
+		"-L localhost:1455:localhost:1455 -t dev@travel tmux new-session -A -s main",
+		"BOXFACE_CONFIG=" + h.config,
+	} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("ssh args %q lack %q", args, want)
+		}
+	}
+
+	os.WriteFile(filepath.Join(dir, "known_hosts"), []byte("other ssh-ed25519 AAAAother\n"+env.ID+" ssh-ed25519 AAAAstale\n"), 0o600)
+	h.ok("connect", "travel", "--session", "work")
+	if args := strings.Join(h.sshCalls[1], " "); !strings.Contains(args, "-s work") {
+		t.Fatalf("session args = %s", args)
+	}
+	known, _ := os.ReadFile(filepath.Join(dir, "known_hosts"))
+	if string(known) != "other ssh-ed25519 AAAAother\n"+env.ID+" ssh-ed25519 AAAAhost\n" {
+		t.Fatalf("known_hosts = %q", known)
+	}
+	if code, _, _ := h.run(context.Background(), "", false, "connect", "travel", "--session", "a b"); code != exitUsage {
+		t.Fatalf("bad session name: exit %d", code)
+	}
+	h.ok("connect", "travel", "--forward", "1455", "--forward", "8080:3000")
+	if args := strings.Join(h.sshCalls[len(h.sshCalls)-1], " "); !strings.Contains(args, "-L localhost:1455:localhost:1455 -L localhost:8080:localhost:3000 -t dev@travel") || strings.Count(args, ":1455") != 2 {
+		t.Fatalf("forward args = %s", args)
+	}
+	h.portBusy = true
+	code, _, errOut = h.run(context.Background(), "", false, "connect", "travel")
+	if args := strings.Join(h.sshCalls[len(h.sshCalls)-1], " "); code != exitOK || strings.Contains(args, "-L") || !strings.Contains(errOut, "localhost:1455 is in use") {
+		t.Fatalf("busy callback port: exit %d, args %s, %s", code, args, errOut)
+	}
+	h.portBusy = false
+	for _, bad := range []string{"0", "70000", "x", "1455:", "a:b"} {
+		if code, _, _ := h.run(context.Background(), "", false, "connect", "travel", "--forward", bad); code != exitUsage {
+			t.Fatalf("--forward %s: exit %d", bad, code)
+		}
+	}
+}
+
+func TestInterruptedConnectLeavesStartRunning(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	h.ok("stop", "travel")
+	h.worker.gate = make(chan struct{})
+	h.worker.entered = make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-h.worker.entered; cancel() }()
+	code, _, errOut := h.run(ctx, "", false, "connect", "travel")
+	if code != exitInterrupted || !strings.Contains(errOut, "continues on the server") || len(h.sshCalls) != 0 {
+		t.Fatalf("interrupted connect: exit %d, ssh %v, %s", code, h.sshCalls, errOut)
+	}
+	close(h.worker.gate)
+	h.runner.Wait()
+	if out := h.ok("inspect", "travel"); !strings.Contains(out, "running") {
+		t.Fatalf("start did not finish: %s", out)
+	}
+}
+
+func TestTunnelCarriesBytes(t *testing.T) {
+	h := newHarness(t)
+	env := h.createMain()
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	c := &cli{stdin: bufio.NewReader(stdinR), stdout: stdoutW, stderr: io.Discard, configPath: h.config}
+	done := make(chan int)
+	go func() { done <- c.run(context.Background(), []string{"tunnel", env.ID}) }()
+	io.WriteString(stdinW, "SSH-2.0-test\r\n")
+	line, err := bufio.NewReader(stdoutR).ReadString('\n')
+	if err != nil || line != "SSH-2.0-test\r\n" {
+		t.Fatalf("echo = %q, %v", line, err)
+	}
+	stdinW.Close()
+	go io.Copy(io.Discard, stdoutR)
+	if code := <-done; code != exitOK {
+		t.Fatalf("tunnel exit %d", code)
+	}
+
+	h.ok("stop", "travel")
+	code, _, errOut := h.run(context.Background(), "", false, "tunnel", env.ID)
+	if code != exitError || !strings.Contains(errOut, "environment_not_running") {
+		t.Fatalf("tunnel to stopped: exit %d, %s", code, errOut)
+	}
+}
+
+func TestLoginWithTailscaleIdentityNeedsNoCode(t *testing.T) {
+	h := newHarness(t)
+	code, _, errOut := h.run(context.Background(), "", false, "login", h.tailnet)
+	if code != exitError || !strings.Contains(errOut, "login code required") {
+		t.Fatalf("unbound identity: exit %d, %s", code, errOut)
+	}
+	if _, err := h.authStore.BindOwnerIdentity(context.Background(), "onat", "tailscale", "onat@github"); err != nil {
+		t.Fatal(err)
+	}
+	code, _, errOut = h.run(context.Background(), "", false, "login", h.tailnet)
+	if code != exitOK || !strings.Contains(errOut, "signed in with your Tailscale login") || !strings.Contains(errOut, "registered SSH key") {
+		t.Fatalf("identity login: exit %d, %s", code, errOut)
+	}
+	h.ok("list")
+	if code, _, errOut := h.run(context.Background(), h.code+"\n", true, "login", h.server); code != exitOK || !strings.Contains(errOut, "logged in") {
+		t.Fatalf("code login on a plain listener: exit %d, %s", code, errOut)
+	}
+}
+
+func TestConnectFromALaterDeviceNeedsARestart(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	first := h.config
+
+	code, err := h.authStore.Bootstrap(context.Background(), "onat", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.config = filepath.Join(t.TempDir(), "tablet", "config.json")
+	h.ok("login", h.server, "--code", code)
+	status, _, errOut := h.run(context.Background(), "", false, "connect", "travel")
+	if status != exitError || !strings.Contains(errOut, "does not accept this device's key yet") || !strings.Contains(errOut, "boxfacectl stop travel") || len(h.sshCalls) != 0 {
+		t.Fatalf("connect from the tablet: exit %d, ssh %v, %s", status, h.sshCalls, errOut)
+	}
+	h.ok("stop", "travel")
+	h.ok("connect", "travel")
+	if len(h.sshCalls) != 1 {
+		t.Fatalf("ssh calls after restart = %v", h.sshCalls)
+	}
+	h.config = first
+	h.ok("connect", "travel")
+}
+
+func TestImageDeleteRefusesAliasedImage(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	var list []images.Image
+	json.Unmarshal([]byte(h.ok("--json", "image", "list")), &list)
+	main := list[0]
+	os.MkdirAll(filepath.Join(h.importDir, "old"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "old", "vmlinux"), []byte("old kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "old", "rootfs.ext4"), []byte("old rootfs"), 0o644)
+	var old images.Image
+	json.Unmarshal([]byte(h.ok("--json", "image", "import", "old")), &old)
+
+	if code, _, errOut := h.run(context.Background(), "", false, "image", "delete", main.ID); code != exitError || !strings.Contains(errOut, "alias main") {
+		t.Fatalf("delete aliased image: exit %d, %s", code, errOut)
+	}
+	h.ok("image", "delete", old.ID)
+	if out := h.ok("image", "list"); strings.Contains(out, old.ID) || !strings.Contains(out, main.ID) {
+		t.Fatalf("image list after delete = %s", out)
 	}
 }

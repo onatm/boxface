@@ -15,6 +15,7 @@ import (
 
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/sshkeys"
 )
 
 type Error struct {
@@ -110,11 +111,11 @@ func key(idempotencyKey string) map[string]string {
 	return map[string]string{"Idempotency-Key": idempotencyKey}
 }
 
-func (c *Client) Login(ctx context.Context, code string) (string, error) {
+func (c *Client) Login(ctx context.Context, code, name string) (string, error) {
 	var out struct {
 		Token string `json:"token"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/login", map[string]string{"code": code}, nil, &out)
+	err := c.do(ctx, http.MethodPost, "/v1/login", map[string]string{"code": code, "name": name}, nil, &out)
 	return out.Token, err
 }
 
@@ -130,6 +131,20 @@ func (c *Client) Images(ctx context.Context) ([]images.Image, error) {
 	}
 	err := c.do(ctx, http.MethodGet, "/v1/images", nil, nil, &out)
 	return out.Images, err
+}
+
+func (c *Client) SetImageAlias(ctx context.Context, name, imageID string) error {
+	return c.do(ctx, http.MethodPut, "/v1/image-aliases/"+url.PathEscape(name), map[string]string{"image_id": imageID}, nil, nil)
+}
+
+func (c *Client) RemoveImage(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/images/"+url.PathEscape(id), nil, nil, nil)
+}
+
+func (c *Client) AddSSHKey(ctx context.Context, name, publicKey string) (sshkeys.Key, error) {
+	var k sshkeys.Key
+	err := c.do(ctx, http.MethodPost, "/v1/ssh-keys", map[string]string{"name": name, "public_key": publicKey}, nil, &k)
+	return k, err
 }
 
 func (c *Client) Create(ctx context.Context, idempotencyKey string, req lifecycle.CreateRequest) (lifecycle.Accepted, error) {
@@ -172,6 +187,47 @@ func (c *Client) Delete(ctx context.Context, idempotencyKey, id string, purge bo
 	}
 	err := c.do(ctx, http.MethodDelete, path, nil, key(idempotencyKey), &acc)
 	return acc, err
+}
+
+type Connection struct {
+	EnvironmentID string   `json:"environment_id"`
+	User          string   `json:"user"`
+	HostKey       string   `json:"host_key"`
+	Fingerprints  []string `json:"key_fingerprints"`
+}
+
+func (c *Client) Connection(ctx context.Context, id string) (Connection, error) {
+	var conn Connection
+	err := c.do(ctx, http.MethodGet, "/v1/environments/"+url.PathEscape(id)+"/connection", nil, nil, &conn)
+	return conn, err
+}
+
+func (c *Client) Tunnel(ctx context.Context, id string) (io.ReadWriteCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/environments/"+url.PathEscape(id)+"/ssh", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "boxface-ssh")
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	resp, err := (&http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, Protocols: protocols}}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer resp.Body.Close()
+		var e struct {
+			Error Error `json:"error"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&e); err != nil || e.Error.Code == "" {
+			return nil, &Error{Status: resp.StatusCode, Code: "http_error", Message: resp.Status}
+		}
+		e.Error.Status = resp.StatusCode
+		return nil, &e.Error
+	}
+	return resp.Body.(io.ReadWriteCloser), nil
 }
 
 func (c *Client) Operation(ctx context.Context, id string) (lifecycle.Operation, error) {

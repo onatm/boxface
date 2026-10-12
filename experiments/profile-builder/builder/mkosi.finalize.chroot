@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+rm -f /etc/resolv.conf
+echo 'nameserver 1.1.1.1' > /etc/resolv.conf
+mkdir -p /nix /input
+systemctl enable systemd-networkd.service boxface-build.service
+systemctl mask serial-getty@ttyS0.service getty@tty1.service

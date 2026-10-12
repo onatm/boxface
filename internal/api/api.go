@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -15,20 +16,43 @@ import (
 	"github.com/onatm/boxface/internal/auth"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/profiles"
+	"github.com/onatm/boxface/internal/secrets"
+	"github.com/onatm/boxface/internal/sshkeys"
 	"github.com/onatm/boxface/internal/version"
+	"github.com/onatm/boxface/internal/worker"
 )
 
 const maxBody = 1 << 20
 
 type Server struct {
-	Auth         *auth.Store
-	Lifecycle    *lifecycle.Service
-	Images       *images.Registry
-	Capacity     lifecycle.Capacity
-	PollInterval time.Duration
+	Auth      *auth.Store
+	Lifecycle *lifecycle.Service
+	Images    *images.Registry
+	SSHKeys   *sshkeys.Store
+	Secrets   *secrets.Store
+	Profiles  *profiles.Store
+	Builds    interface{ Kick() }
+	Storage   interface {
+		Storage(ctx context.Context) (worker.Storage, error)
+		RemoveBuildCache(ctx context.Context, ownerID string) error
+	}
+	Credentials interface {
+		PushOwner(ctx context.Context, ownerID string)
+	}
+	Gateway       Gateway
+	DialGuest     func(ctx context.Context, address string) (net.Conn, error)
+	Capacity      lifecycle.Capacity
+	PollInterval  time.Duration
+	LoginFailures int
+	LoginWindow   time.Duration
+
+	limiter *loginLimiter
 }
 
 type ownerKey struct{}
+
+type tokenKey struct{}
 
 type apiError struct {
 	Code      string `json:"code"`
@@ -37,39 +61,81 @@ type apiError struct {
 }
 
 func (s *Server) Handler() http.Handler {
+	if s.LoginFailures == 0 {
+		s.LoginFailures = 10
+	}
+	if s.LoginWindow == 0 {
+		s.LoginWindow = 10 * time.Minute
+	}
+	if s.DialGuest == nil {
+		s.DialGuest = dialGuest
+	}
+	s.limiter = newLoginLimiter(s.LoginFailures, s.LoginWindow)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("POST /v1/login", s.login)
+	s.webRoutes(mux)
 	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
 	authed("GET /v1/capabilities", s.capabilities)
+	authed("GET /v1/identities", s.listIdentities)
+	authed("POST /v1/identities", s.bindIdentity)
+	authed("DELETE /v1/identities/{id}", s.unbindIdentity)
+	authed("POST /v1/login-codes", s.issueLoginCode)
+	authed("GET /v1/tokens", s.listTokens)
+	authed("DELETE /v1/tokens/{id}", s.revokeToken)
 	authed("POST /v1/images", s.importImage)
 	authed("GET /v1/images", s.listImages)
+	authed("GET /v1/image-imports", s.listStaged)
+	authed("PUT /v1/image-aliases/{name}", s.setImageAlias)
+	authed("GET /v1/defaults", s.getDefaults)
+	authed("PUT /v1/defaults", s.setDefaults)
+	authed("GET /v1/ssh-keys", s.listSSHKeys)
+	authed("POST /v1/ssh-keys", s.addSSHKey)
+	authed("DELETE /v1/ssh-keys/{id}", s.deleteSSHKey)
+	authed("DELETE /v1/images/{id}", s.removeImage)
+	authed("DELETE /v1/profiles/{id}", s.deleteProfile)
+	authed("GET /v1/storage", s.storage)
+	authed("DELETE /v1/storage/build-cache", s.clearBuildCache)
+	authed("GET /v1/profiles", s.listProfiles)
+	authed("POST /v1/profiles", s.createProfile)
+	authed("GET /v1/profiles/{id}", s.getProfile)
+	authed("POST /v1/profiles/{id}/revisions", s.reviseProfile)
+	authed("GET /v1/secrets", s.listSecrets)
+	authed("POST /v1/secrets", s.createSecret)
+	authed("PUT /v1/secrets/{id}", s.updateSecret)
+	authed("DELETE /v1/secrets/{id}", s.deleteSecret)
 	authed("POST /v1/environments", s.createEnvironment)
 	authed("GET /v1/environments", s.listEnvironments)
 	authed("GET /v1/environments/{id}", s.getEnvironment)
 	authed("POST /v1/environments/{id}/start", s.startEnvironment)
 	authed("POST /v1/environments/{id}/stop", s.stopEnvironment)
 	authed("DELETE /v1/environments/{id}", s.deleteEnvironment)
+	authed("GET /v1/environments/{id}/connection", s.connection)
+	authed("GET /v1/environments/{id}/ssh", s.sshTunnel)
 	authed("GET /v1/operations/{id}", s.getOperation)
 	authed("GET /v1/operations/{id}/events", s.operationEvents)
-	return mux
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			writeError(w, auth.ErrUnauthorized)
-			return
+		var owner, tokenID string
+		var err error
+		if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && token != "" {
+			owner, tokenID, err = s.Auth.Authenticate(r.Context(), token)
+		} else if c, cerr := r.Cookie(sessionCookie); cerr == nil {
+			owner, tokenID, err = s.Auth.AuthenticateSession(r.Context(), c.Value)
+		} else {
+			err = auth.ErrUnauthorized
 		}
-		owner, err := s.Auth.Authenticate(r.Context(), token)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ownerKey{}, owner)))
+		ctx := context.WithValue(context.WithValue(r.Context(), ownerKey{}, owner), tokenKey{}, tokenID)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -85,19 +151,101 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	addr := clientAddr(r)
+	if !s.limiter.allow(addr) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.LoginWindow.Seconds())))
+		writeError(w, errRateLimited)
+		return
+	}
 	var req struct {
 		Code string `json:"code"`
+		Name string `json:"name"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		writeError(w, err)
 		return
 	}
-	token, ownerID, err := s.Auth.Login(r.Context(), req.Code)
+	var token, ownerID string
+	var err error
+	if req.Code == "" {
+		provider, subject, ok := requestIdentity(r)
+		if !ok {
+			writeError(w, errNoIdentity)
+			return
+		}
+		token, ownerID, err = s.Auth.LoginIdentity(r.Context(), provider, subject, req.Name, addr)
+	} else {
+		token, ownerID, err = s.Auth.Login(r.Context(), req.Code, req.Name, addr)
+		if errors.Is(err, auth.ErrUnauthorized) {
+			s.limiter.fail(addr)
+		}
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"token": token, "owner_id": ownerID})
+}
+
+func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Auth.Tokens(r.Context(), owner(r), r.Context().Value(tokenKey{}).(string))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": list})
+}
+
+func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.Revoke(r.Context(), owner(r), r.PathValue("id"), clientAddr(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func tokenID(r *http.Request) string { return r.Context().Value(tokenKey{}).(string) }
+
+func (s *Server) listIdentities(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Auth.Identities(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"identities": list})
+}
+
+func (s *Server) bindIdentity(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	provider, subject, ok := requestIdentity(r)
+	if !ok || req.Provider != provider {
+		writeError(w, fmt.Errorf("%w: binding a %s login needs a request through tailscale serve from a device signed in as that user", auth.ErrInvalidIdentity, req.Provider))
+		return
+	}
+	ident, created, err := s.Auth.BindIdentity(r.Context(), owner(r), provider, subject, tokenID(r), clientAddr(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, ident)
+}
+
+func (s *Server) unbindIdentity(w http.ResponseWriter, r *http.Request) {
+	if err := s.Auth.UnbindIdentity(r.Context(), owner(r), r.PathValue("id"), tokenID(r), clientAddr(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +289,264 @@ func (s *Server) listImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"images": list})
+}
+
+func (s *Server) setImageAlias(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ImageID string `json:"image_id"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.Images.SetAlias(r.Context(), r.PathValue("name"), req.ImageID); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": r.PathValue("name"), "image_id": req.ImageID})
+}
+
+func (s *Server) getDefaults(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	saved, err := s.Lifecycle.DefaultsSaved(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		lifecycle.Defaults
+		Saved bool `json:"saved"`
+	}{d, saved})
+}
+
+func (s *Server) setDefaults(w http.ResponseWriter, r *http.Request) {
+	var d lifecycle.Defaults
+	if err := decode(w, r, &d); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.Lifecycle.SetDefaults(r.Context(), owner(r), d); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func (s *Server) listSSHKeys(w http.ResponseWriter, r *http.Request) {
+	list, err := s.SSHKeys.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ssh_keys": list})
+}
+
+func (s *Server) addSSHKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string `json:"name"`
+		PublicKey string `json:"public_key"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	k, created, err := s.SSHKeys.Add(r.Context(), owner(r), req.Name, req.PublicKey)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, k)
+}
+
+func (s *Server) deleteSSHKey(w http.ResponseWriter, r *http.Request) {
+	if err := s.SSHKeys.Delete(r.Context(), owner(r), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listProfiles(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Profiles.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": list})
+}
+
+func (s *Server) createProfile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string        `json:"name"`
+		Spec profiles.Spec `json:"spec"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	p, err := s.Profiles.Create(r.Context(), owner(r), req.Name, req.Spec)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "profile.create", "profile:"+p.Name)
+	s.kickBuilds()
+	writeJSON(w, http.StatusCreated, p)
+}
+
+func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
+	p, err := s.Profiles.Get(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+func (s *Server) reviseProfile(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Spec profiles.Spec `json:"spec"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	rev, err := s.Profiles.AddRevision(r.Context(), owner(r), r.PathValue("id"), req.Spec)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "profile.revise", "profile:"+r.PathValue("id"))
+	s.kickBuilds()
+	writeJSON(w, http.StatusCreated, rev)
+}
+
+func (s *Server) removeImage(w http.ResponseWriter, r *http.Request) {
+	if err := s.Images.Remove(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "image.remove", "image:"+r.PathValue("id"))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteProfile(w http.ResponseWriter, r *http.Request) {
+	d, err := s.Lifecycle.Defaults(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	name, err := s.Profiles.Delete(r.Context(), owner(r), r.PathValue("id"), d.Profile)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "profile.delete", "profile:"+name)
+	s.kickBuilds()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) storage(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Storage.Storage(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) clearBuildCache(w http.ResponseWriter, r *http.Request) {
+	if err := s.Storage.RemoveBuildCache(r.Context(), owner(r)); err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditEvent(r, "build-cache.clear", "owner:"+owner(r))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) kickBuilds() {
+	if s.Builds != nil {
+		s.Builds.Kick()
+	}
+}
+
+func (s *Server) auditEvent(r *http.Request, action, target string) {
+	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), target, clientAddr(r)); err != nil {
+		slog.Error("record audit event", "action", action, "error", err)
+	}
+}
+
+func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Secrets.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secrets": list, "suggested": secrets.Suggested, "session": secrets.Session})
+}
+
+func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string            `json:"name"`
+		Value    string            `json:"value"`
+		Bindings []secrets.Binding `json:"bindings"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	sec, err := s.Secrets.Create(r.Context(), owner(r), req.Name, req.Value, req.Bindings)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.create", sec.Name)
+	writeJSON(w, http.StatusCreated, sec)
+}
+
+func (s *Server) updateSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Value    *string            `json:"value"`
+		Bindings *[]secrets.Binding `json:"bindings"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	sec, err := s.Secrets.Update(r.Context(), owner(r), r.PathValue("id"), req.Value, req.Bindings)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.update", sec.Name)
+	writeJSON(w, http.StatusOK, sec)
+}
+
+func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
+	name, err := s.Secrets.Delete(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	s.auditSecret(r, "secret.delete", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) auditSecret(r *http.Request, action, name string) {
+	if s.Credentials != nil {
+		s.Credentials.PushOwner(context.WithoutCancel(r.Context()), owner(r))
+	}
+	if err := s.Auth.Record(r.Context(), owner(r), action, tokenID(r), "secret:"+name, clientAddr(r)); err != nil {
+		slog.Error("record secret audit event", "action", action, "error", err)
+	}
 }
 
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +597,9 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	acc, err := s.Lifecycle.Delete(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), r.PathValue("id"), purge)
+	if err == nil {
+		s.kickBuilds()
+	}
 	writeAccepted(w, acc, err)
 }
 
@@ -278,14 +687,36 @@ func writeError(w http.ResponseWriter, err error) {
 		code   string
 	}{
 		{auth.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
+		{errRateLimited, http.StatusTooManyRequests, "rate_limited"},
+		{auth.ErrInvalidName, http.StatusBadRequest, "invalid_request"},
+		{auth.ErrTokenNotFound, http.StatusNotFound, "not_found"},
+		{auth.ErrInvalidIdentity, http.StatusBadRequest, "invalid_request"},
+		{auth.ErrIdentityNotFound, http.StatusNotFound, "not_found"},
+		{auth.ErrIdentityTaken, http.StatusConflict, "identity_taken"},
 		{lifecycle.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{images.ErrInvalidSource, http.StatusBadRequest, "invalid_request"},
+		{images.ErrInvalidAlias, http.StatusBadRequest, "invalid_request"},
+		{sshkeys.ErrInvalid, http.StatusBadRequest, "invalid_request"},
 		{lifecycle.ErrNotFound, http.StatusNotFound, "not_found"},
+		{images.ErrNotFound, http.StatusNotFound, "not_found"},
+		{sshkeys.ErrNotFound, http.StatusNotFound, "not_found"},
+		{profiles.ErrInvalid, http.StatusBadRequest, "invalid_request"},
+		{profiles.ErrNotFound, http.StatusNotFound, "not_found"},
+		{profiles.ErrNameTaken, http.StatusConflict, "name_taken"},
+		{profiles.ErrNotReady, http.StatusConflict, "profile_not_ready"},
+		{profiles.ErrInUse, http.StatusConflict, "in_use"},
+		{images.ErrInUse, http.StatusConflict, "in_use"},
+		{secrets.ErrInvalid, http.StatusBadRequest, "invalid_request"},
+		{secrets.ErrNotFound, http.StatusNotFound, "not_found"},
+		{secrets.ErrConflict, http.StatusConflict, "conflict"},
 		{lifecycle.ErrNameTaken, http.StatusConflict, "name_taken"},
 		{lifecycle.ErrEnvironmentDeleted, http.StatusConflict, "environment_deleted"},
 		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},
+		{lifecycle.ErrProfileNotReady, http.StatusConflict, "profile_not_ready"},
 		{lifecycle.ErrIdempotencyConflict, http.StatusConflict, "idempotency_conflict"},
 		{lifecycle.ErrCapacity, http.StatusConflict, "capacity_exceeded"},
+		{errNotRunning, http.StatusConflict, "environment_not_running"},
+		{errGuestUnreachable, http.StatusBadGateway, "guest_unreachable"},
 	} {
 		if errors.Is(err, m.err) {
 			status, code = m.status, m.code
@@ -297,5 +728,5 @@ func writeError(w http.ResponseWriter, err error) {
 		slog.Error("request failed", "error", err)
 		message = "internal error"
 	}
-	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Retryable: status >= 500}})
+	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Retryable: status >= 500 || status == http.StatusTooManyRequests}})
 }
