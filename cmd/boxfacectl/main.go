@@ -36,6 +36,7 @@ commands:
   login URL [--code CODE]
   image import SOURCE [--alias NAME]
   image list
+  image delete ID
   create NAME [--profile NAME] [--image ID|ALIAS] [--vcpus N] [--memory-mib N] [--disk-gib N] [--no-wait]
   connect NAME [--session NAME] [--forward PORT[:GUESTPORT]]...
   list
@@ -161,6 +162,9 @@ func (c *cli) dispatch(ctx context.Context, command string, args []string) error
 		}
 		if len(args) > 0 && args[0] == "import" {
 			return c.imageImport(ctx, args[1:])
+		}
+		if len(args) == 2 && args[0] == "delete" {
+			return c.imageDelete(ctx, args[1])
 		}
 		return errUsage
 	case "create":
@@ -378,6 +382,18 @@ func (c *cli) imageList(ctx context.Context) error {
 		}
 		tw.Flush()
 	})
+	return nil
+}
+
+func (c *cli) imageDelete(ctx context.Context, id string) error {
+	api, err := c.client()
+	if err != nil {
+		return err
+	}
+	if err := api.RemoveImage(ctx, id); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.stderr, "deleted image %s\n", id)
 	return nil
 }
 

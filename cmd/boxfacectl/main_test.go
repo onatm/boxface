@@ -438,3 +438,24 @@ func TestConnectFromALaterDeviceNeedsARestart(t *testing.T) {
 	h.config = first
 	h.ok("connect", "travel")
 }
+
+func TestImageDeleteRefusesAliasedImage(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	var list []images.Image
+	json.Unmarshal([]byte(h.ok("--json", "image", "list")), &list)
+	main := list[0]
+	os.MkdirAll(filepath.Join(h.importDir, "old"), 0o755)
+	os.WriteFile(filepath.Join(h.importDir, "old", "vmlinux"), []byte("old kernel"), 0o644)
+	os.WriteFile(filepath.Join(h.importDir, "old", "rootfs.ext4"), []byte("old rootfs"), 0o644)
+	var old images.Image
+	json.Unmarshal([]byte(h.ok("--json", "image", "import", "old")), &old)
+
+	if code, _, errOut := h.run(context.Background(), "", false, "image", "delete", main.ID); code != exitError || !strings.Contains(errOut, "alias main") {
+		t.Fatalf("delete aliased image: exit %d, %s", code, errOut)
+	}
+	h.ok("image", "delete", old.ID)
+	if out := h.ok("image", "list"); strings.Contains(out, old.ID) || !strings.Contains(out, main.ID) {
+		t.Fatalf("image list after delete = %s", out)
+	}
+}
