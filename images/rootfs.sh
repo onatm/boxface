@@ -50,7 +50,7 @@ for d in home/dev workspace mnt/data var/lib/boxface; do [ -d "$tree/$d" ] || co
 grep -qE '^/dev/vda[[:space:]]+/[[:space:]]+ext4[[:space:]]+ro' "$tree/etc/fstab" || contract "fstab must mount /dev/vda read-only at /"
 grep -qE '^/dev/vdb[[:space:]]+/mnt/data[[:space:]]' "$tree/etc/fstab" || contract "fstab must mount /dev/vdb at /mnt/data"
 for unit in boxface-data boxface-keys boxface-ready systemd-networkd; do
-  [ -e "$tree/etc/systemd/system/multi-user.target.wants/$unit.service" ] || contract "$unit.service not enabled"
+  [ -L "$tree/etc/systemd/system/multi-user.target.wants/$unit.service" ] || contract "$unit.service not enabled"
 done
 for f in usr/local/sbin/boxface-data-init usr/local/sbin/boxface-keys usr/sbin/sshd usr/bin/socat; do
   [ -x "$tree/$f" ] || contract "/$f missing"
