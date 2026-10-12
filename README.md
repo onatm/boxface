@@ -97,6 +97,8 @@ The baseline is read-only inside environments, so nothing an agent or workload d
 | Personal configuration applied on first boot | `images/dotfiles/` ([chezmoi](https://www.chezmoi.io) source) |
 | Guest kernel options | `images/kernel.fragment` |
 
+Keep the `boxface-*` units, the `dev` user, the `sshd` configuration, and the mounts in `images/system/`: they are how Boxface boots, reaches, and connects to an environment. The [image contract](docs/designs/guest.md#image-contract) lists what an image must provide, and `images/rootfs.sh` fails the build when an image breaks it, so a broken image fails at build time instead of booting and never becoming ready.
+
 Register the rebuilt image and point `main` at it; new environments use it, and existing environments keep the image they were created with. With profiles, change the toolset on the web UI's Profiles page instead: no image rebuild is needed.
 
 ## Install on the host

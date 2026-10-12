@@ -76,6 +76,23 @@ A small Boxface service inside the guest reports readiness, coordinates lifecycl
 - The worker distinguishes "VMM running" from "guest ready" using this service's readiness report, which retries until delivered.
 - The guest's network address comes from the kernel command line (`ip=`), applied by `systemd-network-generator`; the image has no static network configuration.
 
+### Image Contract
+
+An image is a directory with `vmlinux` and `rootfs.ext4`. The worker boots it with the drives and devices below, and any image, including one an owner customises from `images/`, must handle them. `images/rootfs.sh` fails the build when the root filesystem breaks a checked item.
+
+| Worker provides | Image must | Checked |
+| --- | --- | --- |
+| `/dev/vda`: the root filesystem, read-only | Mount it read-only at `/` | Yes |
+| `/dev/vdb`: the data disk, ext4 labelled `boxface-data`, seeded with `boxface/ssh/ssh_host_ed25519_key` | Mount it at `/mnt/data`; `boxface-data.service` bind-mounts `home`, `workspace`, and `boxface` to `/home/dev`, `/workspace`, and `/var/lib/boxface` before SSH and the user session start | Yes |
+| `/dev/vdc`: the keys drive, read-only, NUL-padded `authorized_keys` | `boxface-keys.service` copies it to `/run/boxface/authorized_keys` before SSH starts | Yes |
+| `/dev/vdd`: the profile drive, read-only, only when the environment has a profile | A base image mounts it at `/nix` (`ro,nofail`) | No |
+| `ip=` on the kernel command line, on `eth0` | `systemd-networkd` enabled, with no static network configuration | Yes |
+| vsock, guest CID 3; host port 1024 | `boxface-ready.service` sends `ready` once SSH and the data disk are up, retrying until delivered | Yes |
+| vsock host port 1025: the credential broker | `/usr/local/bin/boxface-run` (the Go launcher) and the profile script that runs `--shell-init` | Launcher only |
+| `boxfacectl connect`: SSH as `dev`, then `tmux new-session -A` | User `dev` (UID/GID 1000, home `/home/dev`); `sshd` using the host key from the data disk and `/run/boxface/authorized_keys`; `socat`; `tmux` on PATH | All but `tmux`, which `profile.sh` checks in the toolset |
+
+The image must also carry no SSH host keys, machine ID, private keys, or `sudo`; the build checks these too.
+
 ### Security & Privacy
 
 - Guest workloads are untrusted relative to host management services.
