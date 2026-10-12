@@ -16,6 +16,21 @@ tasks:
       - GOOS=darwin GOARCH=arm64 go build -ldflags '{{.LDFLAGS}}' -o bin/darwin-arm64/ ./cmd/boxfacectl
       - GOOS=darwin GOARCH=amd64 go build -ldflags '{{.LDFLAGS}}' -o bin/darwin-amd64/ ./cmd/boxfacectl
 
+  dist:
+    desc: Package the built binaries into release archives and SHA256SUMS in dist/
+    deps: [build]
+    vars:
+      NAME: boxface_{{trimPrefix "v" .VERSION}}
+    cmds:
+      - rm -rf dist && mkdir -p dist/stage
+      - mkdir dist/stage/{{.NAME}}_linux_amd64 && cp bin/linux-amd64/boxface-api bin/linux-amd64/boxface-worker bin/linux-amd64/boxface-run bin/linux-amd64/boxfacectl dist/stage/{{.NAME}}_linux_amd64/
+      - cp -R deploy README.md CHANGELOG.md dist/stage/{{.NAME}}_linux_amd64/
+      - for: [linux-arm64, darwin-arm64, darwin-amd64]
+        cmd: d=dist/stage/{{.NAME}}_$(echo {{.ITEM}} | tr - _) && mkdir $d && cp bin/{{.ITEM}}/boxfacectl README.md CHANGELOG.md $d/
+      - cd dist/stage && for d in *; do tar -czf ../$d.tar.gz $d; done
+      - rm -rf dist/stage
+      - cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
+
   integration:
     desc: Build the linux/amd64 worker integration test binary; run it as root on a KVM host with BOXFACE_IT_IMAGE set
     env:

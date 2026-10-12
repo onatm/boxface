@@ -1,20 +1,23 @@
 # Boxface
 
-Boxface runs persistent development environments inside Firecracker microVMs on a Linux server you control. A lightweight client, such as a Linux tablet, creates an environment, connects to it over SSH, and runs coding-agent CLIs there. The environment keeps running when the client disconnects.
+[![CI](https://github.com/onatm/boxface/actions/workflows/ci.yml/badge.svg)](https://github.com/onatm/boxface/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/onatm/boxface)](https://github.com/onatm/boxface/releases/latest)
+
+Boxface runs persistent development environments inside Firecracker microVMs on a Linux server you control. A lightweight client creates an environment, connects to it over SSH, and runs coding-agent CLIs there. The environment keeps running when the client disconnects.
 
 Each environment has a read-only managed baseline (Debian, rootless Docker, and a Nix-built toolset with Claude Code, Codex, OpenCode, Pi, mise, Node, and Rust) and its own persistent data disk for your home directory and workspace.
 
-## Status
+## Features
 
-Early and single-owner. What works today:
+- **Durable lifecycle.** Create, start, stop, delete, and purge environments with `boxfacectl` or the API. Operations survive API, worker, and host restarts without duplicating or orphaning VMs, disks, or network devices.
+- **Persistent sessions.** `boxfacectl connect` attaches to a named tmux session over SSH tunnelled through the API, with the host key pinned at creation. Disconnects leave everything running.
+- **Isolated guests.** Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet. Only the host worker performs privileged operations.
+- **Versioned toolsets.** Profiles are built from Nix packages or a Home Manager module in an isolated builder VM and attached read-only, so the baseline stays fixed while your data persists.
+- **Agent credentials.** Store tokens once, encrypted with a local key or a KMS, and deliver them at run time only to the commands you name.
+- **Web UI.** Setup checklist, images, profiles, defaults, SSH keys, client logins, credentials, disk usage, and environments.
+- **Private or public access.** Reach the API through Tailscale Serve, public TLS with Let's Encrypt, or an SSH tunnel.
 
-- `boxface-api` and `boxface-worker` run on one KVM host as systemd services.
-- Environments can be created, listed, inspected, started, stopped, deleted, and purged through the API or `boxfacectl`, and survive API, worker, and host restarts ([acceptance results](docs/research/2026-10-lifecycle.md)).
-- Guests reach the internet, but not the host, the API, each other, the LAN, or the tailnet.
-- `boxfacectl connect` reaches an environment's SSH through the API, with a host key pinned at creation, and attaches to a tmux session.
-- A web UI for configuration: setup checklist, images and the `main` alias, defaults, SSH keys, client logins, and the environment list.
-
-Not yet built: session records, credential delivery to sessions, image builds through the API, backups, upgrades, and environment actions in the web UI. See the [Roadmap](docs/ROADMAP.md). Everything has been tested on a nested-virtualization cloud droplet only, not yet on bare metal.
+Boxface 0.1.0 targets a single owner on one KVM host. Image builds through the API, backups, upgrades, and environment actions in the web UI are planned; see the [Roadmap](docs/ROADMAP.md) and the [Changelog](CHANGELOG.md).
 
 ## Requirements
 
@@ -25,13 +28,30 @@ Not yet built: session records, credential delivery to sessions, image builds th
 - Disk space for images (about 7 GiB each) and data disks (sparse, 20 GiB by default).
 
 **Build machine**
-- Go 1.25 or newer.
+- Go 1.26 or newer.
 - Optionally [Task](https://taskfile.dev).
 
 **Client**
 - `boxfacectl` for Linux (amd64 or arm64) or macOS, and SSH.
 
-## Build
+## Download
+
+Each [release](https://github.com/onatm/boxface/releases) has an archive per platform and a `SHA256SUMS` file:
+
+| Archive | Contents |
+|---|---|
+| `boxface_<version>_linux_amd64.tar.gz` | `boxface-api`, `boxface-worker`, `boxface-run`, `boxfacectl`, and `deploy/` for the host |
+| `boxface_<version>_linux_arm64.tar.gz` | `boxfacectl` |
+| `boxface_<version>_darwin_arm64.tar.gz`, `boxface_<version>_darwin_amd64.tar.gz` | `boxfacectl` for macOS |
+
+```sh
+curl -LO https://github.com/onatm/boxface/releases/download/v0.1.0/boxface_0.1.0_linux_amd64.tar.gz
+curl -LO https://github.com/onatm/boxface/releases/download/v0.1.0/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf boxface_0.1.0_linux_amd64.tar.gz
+```
+
+## Build from source
 
 ```sh
 task build
@@ -39,7 +59,7 @@ task build
 
 This writes static binaries to `bin/`:
 
-- `bin/linux-amd64/`: `boxface-api`, `boxface-worker`, and `boxfacectl`
+- `bin/linux-amd64/`: `boxface-api`, `boxface-worker`, `boxface-run` (the guest credential launcher built into images), and `boxfacectl`
 - `bin/linux-arm64/`: `boxfacectl`
 - `bin/darwin-arm64/` (Apple silicon) and `bin/darwin-amd64/` (Intel): `boxfacectl` for macOS
 
@@ -52,7 +72,7 @@ go build -o boxfacectl ./cmd/boxfacectl   # for the machine you're on
 
 ## Build a guest image
 
-Images are currently built by the experiment scripts on the host, as root. The scripts install their build dependencies with `apt`, so they need a Debian or Ubuntu host. Copy the repository to the host first, then:
+Images are currently built by the experiment scripts on the host, as root. The scripts install their build dependencies with `apt`, so they need a Debian or Ubuntu host. Copy the repository to the host first, with `boxface-run` at `bin/linux-amd64/boxface-run` (from `task build` or the release archive), then:
 
 ```sh
 experiments/gate-a/00-host-setup.sh    # Firecracker; checks KVM
@@ -67,11 +87,13 @@ The result is `/var/tmp/boxface-gate-c/out/vmlinux` and `/var/tmp/boxface-gate-c
 
 Run these as root on the host.
 
-1. Copy the repository and `bin/linux-amd64/` to the host, then install and start the services from the binaries directory:
+1. Install and start the services from the extracted release archive:
 
    ```sh
-   deploy/install.sh bin/linux-amd64
+   boxface_0.1.0_linux_amd64/deploy/install.sh boxface_0.1.0_linux_amd64
    ```
+
+   From a source build, run `deploy/install.sh bin/linux-amd64` in the repository instead.
 
    This creates the `boxface` and `boxface-vm` system users and `/var/lib/boxface`. It then installs both services, enables them and starts them. The API listens on `127.0.0.1:7443`. On the first install it also creates your owner (`$BOXFACE_OWNER`, else the `sudo` user) and prints a setup URL with a one-time code, valid for 15 minutes. If it expires, create another code with `runuser -u boxface -- boxface-api bootstrap -owner <your-name>` and open `/login?code=<code>`.
 
@@ -187,7 +209,7 @@ Inside, `/home/dev` and `/workspace` are on the persistent data disk, and `/tmp`
 
 ### Profiles
 
-A profile is the set of tools your environments get, built from Nix packages (or a Home Manager module) in an isolated builder VM and attached to environments as a read-only drive. Profiles are managed through the API (`/v1/profiles`); the web UI page comes next. `boxfacectl create NAME` uses the profile named `main` once it has a ready revision, and `--profile NAME` picks another. An environment keeps the revision it was created with; `boxfacectl inspect` shows when a newer one is ready. Profiles need the base image and builder image from `experiments/profile-builder/01-images.sh`: import the base image as `main`, and copy the builder's `vmlinux` and `rootfs.ext4` to `/var/lib/boxface/builder`.
+A profile is the set of tools your environments get, built from Nix packages (or a Home Manager module) in an isolated builder VM and attached to environments as a read-only drive. Profiles are managed on the web UI's Profiles page or through the API (`/v1/profiles`). `boxfacectl create NAME` uses the profile named `main` once it has a ready revision, and `--profile NAME` picks another. An environment keeps the revision it was created with; `boxfacectl inspect` shows when a newer one is ready. Profiles need the base image and builder image from `experiments/profile-builder/01-images.sh`: import the base image as `main`, and copy the builder's `vmlinux` and `rootfs.ext4` to `/var/lib/boxface/builder`.
 
 Disk space: the web UI's Images page shows free space and what uses it. Unused profile drives are removed automatically; remove images that no environment uses, or clear the Nix build cache, to free more. Profile builds need 10 GiB free.
 
@@ -248,6 +270,7 @@ runuser -u boxface -- boxface-api secrets rekey -from file:///var/lib/boxface/ap
 task test          # unit tests
 task lint          # gofmt and go vet
 task integration   # builds the worker integration test binary
+task dist          # release archives and SHA256SUMS in dist/
 ```
 
 Run the worker integration test as root on a KVM host:
@@ -263,6 +286,8 @@ BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> test/acceptance/lifecycle.sh
 BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> BOXFACE_KERNEL=/var/tmp/boxface-gate-c/out/vmlinux test/acceptance/recovery.sh
 ```
 
+CI runs lint, tests, and the build on every pull request. To release, add the version's section to `CHANGELOG.md`, then push a `vX.Y.Z` tag: the release workflow runs the checks, builds the archives, and publishes a GitHub release with that section as its notes.
+
 `AGENTS.md` describes the project conventions.
 
 ## Documentation
@@ -270,4 +295,5 @@ BOXFACE_TOKEN=<token> BOXFACE_IMAGE=<image-id> BOXFACE_KERNEL=/var/tmp/boxface-g
 - [Architecture](docs/ARCHITECTURE.md): system design and decisions
 - [Roadmap](docs/ROADMAP.md): what's next
 - [Design docs](docs/designs/): API, host worker, operations, guest, CLI, and more
-- [Plans](docs/plans/) and [research results](docs/research/): the baseline experiment (Gates A–C) and the lifecycle stage
+- [Plans](docs/plans/) and [research results](docs/research/): implementation plans and validation results
+- [Changelog](CHANGELOG.md): what changed in each release

@@ -10,7 +10,7 @@
 
 **Planning horizon:** Until the personal daily-use trial validates the MVP; Later items are direction, not commitments.
 
-**Last reviewed:** 2026-10-11
+**Last reviewed:** 2026-10-12
 
 **Next review:** When the daily terminal workflow exits, or when ThinkCentre measurements contradict the nested-droplet results.
 
@@ -168,7 +168,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | ThinkCentre hardware supports the needed environments | High | Capacity not measured; gates ran on a nested-virtualization droplet | ThinkCentre validation stage | onatm |
 | Firecracker supports rootless Docker and the guest kernel | High | Passed on a nested-virtualization droplet ([Gate A](./research/2026-10-gate-a.md)) | Repeat Gate A in the ThinkCentre validation stage; fallback Cloud Hypervisor | onatm |
 | Home Manager profile can be exported and exposed read-only on Debian | High | Validated ([Gate B](./research/2026-10-gate-b.md)) | Gate B | onatm |
-| Each agent has a supported authentication path in the guest | Medium | Claude Code validated with subscription login and setup token ([Gate C](./research/2026-10-gate-c.md)); others untested | Gate C and the daily terminal workflow | onatm |
+| Each agent has a supported authentication path in the guest | Medium | All four validated with subscription sign-in inside an environment ([agent authentication](./research/2026-10-agent-auth.md)) | Resolved 2026-10-10 | onatm |
 | Implementation language | High | Decided: Go | Resolved 2026-10-09 | onatm |
 
 ## Review and Change Policy
@@ -187,6 +187,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
 | 2026-10-10 | Connect plan C0–C7 done; daily terminal workflow stays in Now for agent credentials; keys now apply at each start | [Connect results](./research/2026-10-connect.md) | onatm |
 | 2026-10-10 | Validated subscription sign-in for all four agents inside environments; decided built-in secret storage with Go CDK `secrets`, OpenBao and 1Password as later providers; daily terminal workflow waits on a tablet run | [Agent authentication](./research/2026-10-agent-auth.md); owner decision | onatm |
+| 2026-10-12 | Released 0.1.0: lifecycle, connect, configuration web UI, profiles, and the credential store, with CI and a tag-driven release workflow | Owner decision to release what is built; stages and their exit criteria are unchanged ([Changelog](../CHANGELOG.md)) | onatm |
 
 ## Linked Documents
 

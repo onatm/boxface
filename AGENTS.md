@@ -64,6 +64,7 @@ Consult docs only when relevant to the task:
 - `task build` - server binaries for linux/amd64 and `boxfacectl` for linux/amd64, linux/arm64, darwin/arm64, and darwin/amd64, in `bin/`
 - `task test` - unit tests
 - `task lint` - `gofmt` check and `go vet`
+- `task dist` - release archives for each platform and `SHA256SUMS` in `dist/`; pushing a `v*` tag runs it in the release workflow, which publishes a GitHub release with the version's `CHANGELOG.md` section as notes
 - `task integration` - builds `bin/linux-amd64/worker.integration.test`; run it as root on a KVM host with `BOXFACE_IT_IMAGE` set to a directory holding `vmlinux` and `rootfs.ext4`; the profile drive test also needs `BOXFACE_IT_BASE` (a base image directory without a profile) and `BOXFACE_IT_PROFILE` (a profile drive), both from `experiments/profile-builder/`
 - `deploy/install.sh bin/linux-amd64` - installs `boxface-api` and `boxface-worker` as systemd services on a host, as root
 - `test/acceptance/lifecycle.sh` - lifecycle, isolation, and audit scenarios L1–L6, S1, S2 against installed services, as root on the host; needs `BOXFACE_TOKEN` and `BOXFACE_IMAGE`
