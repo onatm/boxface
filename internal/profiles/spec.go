@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const builderVersion = "2"
+const builderVersion = "3"
 
 var ErrInvalid = errors.New("invalid profile")
 
@@ -23,7 +23,7 @@ var (
 
 	attributePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_'-]*(\.[A-Za-z_][A-Za-z0-9_'-]*)*$`)
 	refPattern       = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
-	required         = []string{"chezmoi", "git", "tmux"}
+	required         = []string{"git", "tmux"}
 )
 
 const (

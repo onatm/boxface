@@ -3,7 +3,7 @@ set -euo pipefail
 
 NIX_VERSION=2.35.2
 NIX_INSTALLER_SHA256=9adda97297d9e8ab360df95c729eabff4f4f93d6db091953c3a68f29e3fb130c
-TOOLS="${TOOLS:-claude codex opencode pi mise node npm rustc cargo cc git tmux chezmoi}"
+TOOLS="${TOOLS:-claude codex opencode pi mise node npm rustc cargo cc git tmux}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 flake="${PROFILE_FLAKE:-$here/profile}"

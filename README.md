@@ -94,7 +94,7 @@ The baseline is read-only inside environments, so nothing an agent or workload d
 | System packages and services (Debian, Docker, SSH) | `images/system/` ([mkosi](https://github.com/systemd/mkosi) configuration and files) |
 | Guest integration: PATH, credential launchers, first-boot setup | `images/guest/` |
 | Toolset: agents, languages, CLIs | `images/profile/flake.nix` (Nix packages or a Home Manager module) |
-| Personal configuration applied on first boot | `images/dotfiles/` ([chezmoi](https://www.chezmoi.io) source) |
+| Personal configuration seeded on first boot | `images/dotfiles/` ([chezmoi](https://www.chezmoi.io) source, rendered at build time) |
 | Guest kernel options | `images/kernel.fragment` |
 
 Keep the `boxface-*` units, the `dev` user, the `sshd` configuration, and the mounts in `images/system/`: they are how Boxface boots, reaches, and connects to an environment. The [image contract](docs/designs/guest.md#image-contract) lists what an image must provide, and `images/rootfs.sh` fails the build when an image breaks it, so a broken image fails at build time instead of booting and never becoming ready.
