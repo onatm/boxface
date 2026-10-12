@@ -2,9 +2,7 @@
 
 **Date:** 2026-10-12
 
-**Result:** Pass, with three changes to the plan: rendering executes code, so it belongs in the builder only; the builder must render as `dev` with the guest's hostname; plain repositories need their own handling
-
-**Plan:** [Configuration Model](../plans/2026-10-configuration-model.md), M0
+**Result:** Pass, with three changes to the design: rendering executes code, so it belongs in the builder only; the builder must render as `dev` with the guest's hostname; plain repositories need their own handling
 
 ---
 
@@ -48,11 +46,11 @@
 6. **`create_` and `modify_` need recording.** `archive` loses the distinction. `managed --path-style=source-relative` recovers it, so the manifest can mark `create_` files (seed only, never update) and `modify_` files (rendered once at build time from an empty file, which is not what the user expects for a merge) for the later update action.
 7. **Externals are fetched at build time** and recorded only in the log. They are allowed, since the builder has network access for Nix, and `--exclude=externals` remains available if a profile should not fetch them.
 
-## Proposed Plan Changes
+## Design Changes
 
 - Replace "scripts never run" with: `run_` scripts are excluded, and templates and `modify_` scripts run in the builder only.
 - Render with `chezmoi archive --exclude=scripts,encrypted` as `dev`, `HOME=/home/dev`, hostname `boxface`; build the manifest from `managed --path-style=source-relative`.
-- Plain repositories: detect them as in finding 5 and either copy them as they are or fail with a message; this is the plan's open question, and the owner decides.
+- Plain repositories: detect them as in finding 5 and either copy them as they are or fail with a message; the owner decided to copy them as they are.
 
 ## Host Run
 

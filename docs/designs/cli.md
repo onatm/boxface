@@ -46,7 +46,7 @@ boxfacectl delete experiment --purge-data
 
 ### Implemented Subset
 
-The [lifecycle plan](../plans/2026-10-durable-lifecycle.md) implements `login`, `image import`, `image list`, `create`, `list`, `inspect`, `start`, `stop`, `delete`, and `operation`. The [connect plan](../plans/2026-10-connect-and-web-ui.md) adds `connect`, and narrows the daily path to `login URL`, `create NAME`, and `connect NAME`. The rest of the commands above remain proposed.
+`login`, `image import`, `image list`, `create`, `list`, `inspect`, `start`, `stop`, `delete`, `operation`, and `connect` are implemented, and the daily path is `login URL`, `create NAME`, and `connect NAME`. The rest of the commands above remain proposed.
 
 - `login URL [--code CODE]` (or `--server URL`) exchanges a one-time code from `boxface-api bootstrap` for a token named after the device's host name. It prompts for the code when stdin is a terminal. One server is stored, with its token, in `$BOXFACE_CONFIG` or the user config directory (`boxface/config.json`, mode 0600); `server add` and named servers are deferred.
 - `login` creates a device SSH key, `id_ed25519` beside the config file, with `ssh-keygen` if it does not exist, and registers its public key under the device's host name, linked to the device's login. Registering an existing key again is harmless; revoking the device removes the key.

@@ -4,8 +4,6 @@
 
 **Result:** Pass on the test droplet; ThinkCentre repeat pending
 
-**Plan:** [Durable Server Lifecycle](../plans/2026-10-durable-lifecycle.md#acceptance-scenarios)
-
 **Scripts:** `test/acceptance/lifecycle.sh` (L1–L6, S1, S2), `test/acceptance/recovery.sh` (R1, R2, R4, R5); R3 by hand with a host reboot
 
 ---

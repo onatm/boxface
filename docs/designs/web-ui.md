@@ -1,6 +1,6 @@
 # Web UI
 
-**Status:** Draft — configuration pages implemented ([connect plan](../plans/2026-10-connect-and-web-ui.md#web-ui-scope), C6); recipes, profiles, and environment actions proposed
+**Status:** Draft — configuration pages implemented; recipes and environment actions proposed
 
 ---
 

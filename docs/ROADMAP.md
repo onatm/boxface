@@ -27,7 +27,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 | Objective | Target users | Success measure | Strategy source |
 |---|---|---|---|
 | Replace the laptop for daily development | The owner, travelling with a Linux tablet | At least ten actual development days, over more than one network, without falling back to a local machine because of Boxface defects | [Remote Development Environments](./features/remote-development.md) |
-| Keep the baseline fixed and user state persistent | The owner | Feasibility gates A–C pass; system/package-store writes denied; data survives image replacement | [Architecture](./ARCHITECTURE.md), [Baseline Experiment](./plans/2026-10-baseline-experiment.md) |
+| Keep the baseline fixed and user state persistent | The owner | Feasibility gates A–C pass; system/package-store writes denied; data survives image replacement | [Architecture](./ARCHITECTURE.md), [Gates A–C](./research/2026-10-gate-a.md) |
 | Keep operations low-burden | The owner as host operator | Routine use needs no manual edits to host internals; restarts and retries never duplicate or orphan resources | [Operations](./designs/operations.md) |
 | Decide productisation with evidence | Prospective developers | Setup effort, recurring use, recovery burden, and demand for hosted compute or team features measured with a small invited group | This roadmap |
 
@@ -43,7 +43,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Meaning | Entry / exit criteria |
 |---|---|---|
-| Now | Active work with a clear need and plan | Enters when its plan exists; exits when its exit criteria are met |
+| Now | Active work with a clear need | Enters when its scope is agreed; exits when its exit criteria are met |
 | Next | Committed MVP stages that depend on Now | Enters Now in order, when the previous stage exits |
 | Later | Direction with low confidence | Reconsidered when the MVP trial completes or its trigger fires |
 
@@ -51,7 +51,7 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Horizon | Outcome / problem | Strategic objective | Success signal | Confidence | Owner |
 |---|---|---|---|---|---|
-| Now | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: lifecycle complete; plan written | onatm |
+| Now | Work must survive tablet disconnects | Replace the laptop | Disconnects do not terminate running sessions; all four agents validated | Medium: lifecycle complete | onatm |
 | Next | Routine use still needs host internals | Keep operations low-burden | No manual host edits for configuration, upgrades, backups | Medium | onatm |
 | Next | The MVP is unproven in real work | Replace the laptop | Ten development days without Boxface-caused fallback | Medium | onatm |
 | Next | Results come only from a nested-virtualization droplet | Replace the laptop | All scenarios pass on the ThinkCentre with measured capacity | Medium | onatm |
@@ -65,15 +65,15 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 - **Target outcome:** From the tablet, the owner logs in, creates an environment, and connects to a named session with `boxfacectl login`, `create`, and `connect`; runs any of the four agents and optional mise on real repositories; and reattaches after disconnects. The host is reached over Tailscale with its public address disabled, or over TLS on a public address.
 - **Problem / opportunity:** Lifecycle alone does not let the owner work remotely; connecting still needs host lookups and a jump through host SSH.
 - **Why now:** Durable server lifecycle exited on 2026-10-10.
-- **Committed initiatives:** [Install, Configure, Connect](./plans/2026-10-connect-and-web-ui.md) plan, milestones C0–C7. It pulls the configuration part of the [Web UI](./designs/web-ui.md) forward from Usable configuration and operations.
+- **Committed initiatives:** Install, configure, and connect (done 2026-10-10). It pulled the configuration part of the [Web UI](./designs/web-ui.md) forward from Usable configuration and operations.
 - **Candidate bets:** Authentication, an API-authorised SSH tunnel, named tmux sessions, server defaults and a `main` image, and runtime secret bindings ([Access and Sessions](./designs/access-and-sessions.md), [Credential Broker](./designs/credential-broker.md)).
 - **Success signal:** Tablet disconnects do not terminate running sessions; project work stays remote and recoverable; Claude Code, Codex, OpenCode, and Pi each complete a small real task with a supported authentication mode.
 - **Dependencies:** Durable server lifecycle (complete).
-- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Devices that log in after an environment started need one restart before they can connect ([resolved open question](./plans/2026-10-connect-and-web-ui.md#open-questions)).
-- **Progress:** The connect plan's acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). All four agents signed in with subscriptions inside an environment and completed a small task, and their logins survived a restart ([agent authentication](./research/2026-10-agent-auth.md)). Remaining before exit: the same workflow from the tablet itself, on a real repository. Agent logins are per environment, or shared across environments through the built-in credential store (done 2026-10-11).
+- **Risks / assumptions:** Agent authentication paths differ; at least one supported path per agent must work. Devices that log in after an environment started need one restart before they can connect.
+- **Progress:** The connect acceptance scenarios passed on 2026-10-10 over public TLS and `tailscale serve`, with attachment in 1.5 s and long-lived tunnels proven ([results](./research/2026-10-connect.md)). All four agents signed in with subscriptions inside an environment and completed a small task, and their logins survived a restart ([agent authentication](./research/2026-10-agent-auth.md)). Remaining before exit: the same workflow from the tablet itself, on a real repository. Agent logins are per environment, or shared across environments through the built-in credential store (done 2026-10-11).
 - **Confidence:** Medium.
 - **Owner:** onatm
-- **Advance / completion criteria:** The plan's acceptance scenarios pass on the droplet, and the success signal holds.
+- **Advance / completion criteria:** The connect acceptance scenarios pass on the droplet, and the success signal holds.
 
 ## Next
 
@@ -81,8 +81,8 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 - **Target outcome:** Routine use no longer requires manual edits to host internals.
 - **Problem / opportunity:** Without revision management, upgrades, and backups, the owner must operate the host by hand.
-- **Committed initiatives:** [Configuration Model](./plans/2026-10-configuration-model.md), before 0.1.0.
-- **Candidate bets:** A built-in secret store for credentials so environments need no per-environment sign-in ([Agent Credential Store](./plans/2026-10-secret-store.md), done), the rest of the [Web UI](./designs/web-ui.md), user profiles built in an isolated builder VM and delivered as their own drive ([User Profiles and Builds](./plans/2026-10-profiles.md), done 2026-10-11, including Home Manager generated files and session variables), explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
+- **Committed initiatives:** Configuration model (done 2026-10-12): grouped configuration, the `default` template, devices, and dotfiles rendered in the builder ([results](./research/2026-10-dotfiles-render.md)).
+- **Candidate bets:** A built-in secret store for credentials so environments need no per-environment sign-in ([results](./research/2026-10-credential-store.md), done), the rest of the [Web UI](./designs/web-ui.md), user profiles built in an isolated builder VM and delivered as their own drive ([results](./research/2026-10-profile-builder.md), done 2026-10-11, including Home Manager generated files and session variables), explicit image upgrades, offline backup/restore ([Data Lifecycle](./designs/data-lifecycle.md)), resource visibility, actionable logs, and completed recovery and permission checks.
 - **Success signal:** The [acceptance scenarios](./features/remote-development.md#acceptance-scenarios) pass, and the [security acceptance](./ARCHITECTURE.md#security-acceptance) checks hold.
 - **Dependencies:** Daily terminal workflow.
 - **Confidence:** Medium.
@@ -136,14 +136,14 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 ### Durable server lifecycle
 
-- **Completed:** 2026-10-10, in the [Durable Server Lifecycle](./plans/2026-10-durable-lifecycle.md) plan, on the test droplet.
+- **Completed:** 2026-10-10, on the test droplet.
 - **Outcome:** Environments are created, listed, inspected, started, stopped, deleted, and purged through the API and `boxfacectl`, and survive API, worker, and host restarts without duplicate launches, disks, or network devices.
 - **Evidence:** [Lifecycle acceptance](./research/2026-10-lifecycle.md): all 13 scenarios pass.
 - **Carried forward:** The ThinkCentre repeat moves to the ThinkCentre validation stage; image removal and asynchronous image registration remain open findings.
 
 ### Prove the baseline boundaries
 
-- **Completed:** 2026-10-09, in the [Baseline Experiment](./plans/2026-10-baseline-experiment.md).
+- **Completed:** 2026-10-09.
 - **Outcome:** One manually launched Firecracker guest booted a read-only mkosi baseline with a prebuilt Home Manager profile, ran rootless Docker Compose with a database, preserved personal configuration and agent state across restart, and received credentials from 1Password that never entered the image.
 - **Evidence:** [Gate A](./research/2026-10-gate-a.md) (guest and container runtime), [Gate B](./research/2026-10-gate-b.md) (prebuilt user profile), [Gate C](./research/2026-10-gate-c.md) (personal configuration and credentials).
 - **Carried forward:** Repeat measurements on the ThinkCentre; reduce the 4.7 GiB profile closure; add real guest authorisation to the credential broker; validate Codex, OpenCode, and Pi authentication in the daily terminal workflow.
@@ -182,17 +182,16 @@ A candidate advantage over SSH, AgentBox, or Coder is a predictable persistent m
 
 | Date | Change | Reason / new evidence | Decision maker |
 |---|---|---|---|
-| 2026-10-06 | Created the roadmap from the MVP delivery stages and productisation plan | Docs restructured into architecture, design, feature, and plan docs | onatm |
-| 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now before its plan exists, with the language choice and plan as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
-| 2026-10-09 | Chose Go as the implementation language | Owner decision; the lifecycle plan is the remaining first deliverable | onatm |
+| 2026-10-06 | Created the roadmap from the MVP delivery stages and productisation plan | Docs restructured into architecture, design, and feature docs | onatm |
+| 2026-10-09 | Completed the baseline stage; moved durable server lifecycle from Next to Now, with the language choice as its first work | Gates A–C passed ([A](./research/2026-10-gate-a.md), [B](./research/2026-10-gate-b.md), [C](./research/2026-10-gate-c.md)) | onatm |
+| 2026-10-09 | Chose Go as the implementation language | Owner decision | onatm |
 | 2026-10-10 | Completed durable server lifecycle on the droplet; moved daily terminal workflow to Now; moved ThinkCentre validation to a final Next stage of its own | [Lifecycle acceptance](./research/2026-10-lifecycle.md) passed; owner decision that the ThinkCentre is the last item | onatm |
-| 2026-10-10 | Connect plan C0–C7 done; daily terminal workflow stays in Now for agent credentials; keys now apply at each start | [Connect results](./research/2026-10-connect.md) | onatm |
+| 2026-10-10 | Connect work done; daily terminal workflow stays in Now for agent credentials; keys now apply at each start | [Connect results](./research/2026-10-connect.md) | onatm |
 | 2026-10-10 | Validated subscription sign-in for all four agents inside environments; decided built-in secret storage with Go CDK `secrets`, OpenBao and 1Password as later providers; daily terminal workflow waits on a tablet run | [Agent authentication](./research/2026-10-agent-auth.md); owner decision | onatm |
 | 2026-10-12 | Prepared 0.1.0: lifecycle, connect, configuration web UI, profiles, and the credential store, with CI and a tag-driven release workflow; image builds moved to `images/` with a checked image contract | Owner decision to release what is built; stages and their exit criteria are unchanged ([Changelog](../CHANGELOG.md)) | onatm |
-| 2026-10-12 | 0.1.0 waits for the [Configuration Model](./plans/2026-10-configuration-model.md) plan: grouped configuration, the `default` template, Devices, and dotfiles rendered in the builder | API and CLI names become a contract at the first release; owner decision | onatm |
+| 2026-10-12 | 0.1.0 waits for the configuration model: grouped configuration, the `default` template, Devices, and dotfiles rendered in the builder | API and CLI names become a contract at the first release; owner decision | onatm |
 
 ## Linked Documents
 
 - [Architecture](./ARCHITECTURE.md)
 - [Remote Development Environments](./features/remote-development.md)
-- [Baseline Experiment](./plans/2026-10-baseline-experiment.md)

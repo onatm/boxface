@@ -48,7 +48,7 @@ Component design docs live in `docs/designs/`. Feature docs live in `docs/featur
 
 ## Decision Status
 
-The principles above are agreed requirements. The following implementation choices stay proposed until a feasibility gate validates them; the status column records the outcome. The MVP starts with feasibility gates for the guest image, package profile, and container runtime ([Baseline Experiment](./plans/2026-10-baseline-experiment.md)).
+The principles above are agreed requirements. The following implementation choices stay proposed until a feasibility gate validates them; the status column records the outcome. The MVP started with feasibility gates for the guest image, package profile, and container runtime ([Gate A](./research/2026-10-gate-a.md), [Gate B](./research/2026-10-gate-b.md), [Gate C](./research/2026-10-gate-c.md)).
 
 | Decision | Initial proposal | Validation needed | Status |
 | --- | --- | --- | --- |

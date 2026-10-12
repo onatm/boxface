@@ -313,5 +313,5 @@ CI runs lint, tests, and the build on every pull request. To release, add the ve
 - [Architecture](docs/ARCHITECTURE.md): system design and decisions
 - [Roadmap](docs/ROADMAP.md): what's next
 - [Design docs](docs/designs/): API, host worker, operations, guest, CLI, and more
-- [Plans](docs/plans/) and [research results](docs/research/): implementation plans and validation results
+- [Research results](docs/research/): feasibility and validation results
 - [Changelog](CHANGELOG.md): what changed in each release

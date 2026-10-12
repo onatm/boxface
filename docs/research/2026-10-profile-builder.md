@@ -4,8 +4,6 @@
 
 **Result:** Pass. A Home Manager profile built inside a Firecracker builder VM into a read-only ext4 drive; a base image with no profile booted with that drive at `/nix` and ran every tool and the dotfiles from it.
 
-**Plan:** [User Profiles and Builds](../plans/2026-10-profiles.md), step P0
-
 **Scripts:** `experiments/profile-builder/` (`01-images.sh`, `02-build.sh`, `03-boot.sh`)
 
 ---
@@ -64,7 +62,7 @@ The profile builds inside a builder VM that runs a static Nix as root, so the VM
 5. **1.5 GiB is enough; 1 GiB is not.** This profile builds as fast in 1.5 GiB as in 3 GiB; at 1 GiB a local `patchelf` step is OOM-killed. A 2 GiB default leaves margin and lets a build run beside an environment on a 4 GiB host.
 6. **An OOM kill must still end the VM.** systemd stopped the whole build service after the OOM kill, so the script's failure trap never ran, and the VM idled until the 60-minute timeout. With `SuccessAction=reboot` and `FailureAction=reboot` on the unit, the same failure ended the VM after 104 s. The script is killed before it can report, so the worker must treat a builder that exits without a result as a failed build and keep the console tail as the log.
 
-## Consequences for the Plan
+## Consequences
 
 - ext4 for the profile drive is confirmed; a compressed format is an optimisation for packing time and drive size, not a requirement.
 - Builder limits: 2 vCPUs and 2 GiB of memory, not 3 GiB.
@@ -98,7 +96,7 @@ The profile builds inside a builder VM that runs a static Nix as root, so the VM
 
 The base image (955 MiB, no profile) was imported as `main`, and `boxfacectl create prof` with no flags resolved the owner's `main` profile to revision 2, recorded it on the environment, and was running in 6 s. In a `connect`-style login shell, `/nix` was mounted read-only from `/dev/vdd`; `rg`, `jq`, Node, cargo, mise, and tmux came from `/opt/boxface/profile/bin`; Claude Code answered through its credential shim with the stored token. The guest root filesystem is 922 MiB with 4.7 GiB on the profile drive.
 
-**Finding: the host disk filled.** Staging the base image ran the droplet's 77 GiB disk out of space: four imported 5.4 GiB bundled images, a 5 GiB profile drive, the owner's 7 GiB Nix cache, and about 30 GiB of experiment scratch. SQLite then refused writes (`database or disk is full`) until 13 GiB of spike scratch was removed. Nothing tracks disk used by images, profile drives, or build caches, and nothing removes unused ones; this is recorded as an open question in the plan.
+**Finding: the host disk filled.** Staging the base image ran the droplet's 77 GiB disk out of space: four imported 5.4 GiB bundled images, a 5 GiB profile drive, the owner's 7 GiB Nix cache, and about 30 GiB of experiment scratch. SQLite then refused writes (`database or disk is full`) until 13 GiB of spike scratch was removed. Nothing tracks disk used by images, profile drives, or build caches, and nothing removes unused ones.
 
 ## Profiles Page (P5)
 
@@ -130,7 +128,7 @@ Builds queued together ran one at a time (`u4` stayed `pending` until `u3` finis
 
 ### Finding: module settings are not applied
 
-A Home Manager module can set much more than packages (`programs.git`, shell configuration, `home.file`, session variables), and users editing a module in the web UI will expect those settings to take effect. Today they are evaluated and built but silently dropped. Options, recorded in the plan's open questions: export Home Manager's generated `home-files` with the profile and link or copy them into the home on first boot, as chezmoi does for dotfiles; or run a constrained activation; or reject options other than packages until one of these exists.
+A Home Manager module can set much more than packages (`programs.git`, shell configuration, `home.file`, session variables), and users editing a module in the web UI will expect those settings to take effect. Today they are evaluated and built but silently dropped. Options: export Home Manager's generated `home-files` with the profile and link or copy them into the home on first boot, as chezmoi does for dotfiles; or run a constrained activation; or reject options other than packages until one of these exists.
 
 ## Module Settings Applied
 

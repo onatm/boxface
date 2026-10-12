@@ -57,7 +57,7 @@ Use temporary paths and atomic publication for images and disks.
 | Secret lookup fails | Fail only the dependent launch; never fall back to another credential |
 | Delete interrupted | Resume cleanup without touching unowned resources |
 
-Implemented recovery ([lifecycle plan](../plans/2026-10-durable-lifecycle.md) scenarios R1–R5):
+Implemented recovery ([lifecycle acceptance](../research/2026-10-lifecycle.md) scenarios R1–R5):
 
 - **API restart:** interrupted operations resume from their last completed step.
 - **Worker unavailable:** a step that cannot reach the worker is retried every 2 seconds until the worker returns; it is not failed. Every worker call is idempotent, so retries are safe.

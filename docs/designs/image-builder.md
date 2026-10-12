@@ -103,6 +103,6 @@ Hash resolved build inputs for cache lookup; hash final bytes for artifact ident
 - [Architecture](../ARCHITECTURE.md)
 - [Configuration](./configuration.md)
 - [Guest](./guest.md)
-- [Baseline Experiment](../plans/2026-10-baseline-experiment.md)
+- [Gate A](../research/2026-10-gate-a.md), [Gate B](../research/2026-10-gate-b.md), [Gate C](../research/2026-10-gate-c.md)
 - [mkosi image builder](https://github.com/systemd/mkosi)
 - [Home Manager standalone setup](https://home-manager.dev/manual/unstable/nix-flakes/standalone.html)

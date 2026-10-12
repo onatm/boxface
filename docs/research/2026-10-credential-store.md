@@ -4,8 +4,6 @@
 
 **Result:** Pass for K1–K5 on the droplet; K6 and K7 by automated tests
 
-**Plan:** [Agent Credential Store](../plans/2026-10-secret-store.md#acceptance-scenarios), S1–S5
-
 ---
 
 ## Summary
@@ -47,7 +45,7 @@ The first leak scan reported one command-line match on each side; both were the 
 
 1. **Interactive Claude Code needs the onboarding flag.** With only `CLAUDE_CODE_OAUTH_TOKEN`, Claude Code would show its first-run screens; the wrapper's `hasCompletedOnboarding` write avoids them. Its per-folder trust question still appears, as for any new folder.
 2. **A self-matching scan.** Searching `/proc/*/cmdline` for a string with a command that contains the string finds itself; acceptance scans must use a pattern such as `valu[e]`.
-3. **Credentials are agent-specific in this version.** The owner decided afterwards that bindings must target any command or the whole session ([S7](../plans/2026-10-secret-store.md#s7-credentials-for-any-tool)).
+3. **Credentials are agent-specific in this version.** The owner decided afterwards that bindings must target any command or the whole session, which is now implemented.
 
 ## Credentials for Any Tool (S7)
 

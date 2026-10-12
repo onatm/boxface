@@ -2,7 +2,7 @@ Boxface provides persistent development environments inside microVMs running on 
 
 ## Project Status
 
-Boxface is not implemented yet. The docs describe a proposed architecture and design; the baseline feasibility gates passed (see `docs/research/`), and other integrations are validated as their [Roadmap](./docs/ROADMAP.md) stages run. The implementation is Go, starting with the [lifecycle plan](./docs/plans/2026-10-durable-lifecycle.md).
+Boxface is not implemented yet. The docs describe a proposed architecture and design; the baseline feasibility gates passed (see `docs/research/`), and other integrations are validated as their [Roadmap](./docs/ROADMAP.md) stages run. The implementation is Go.
 
 ## Project Documentation
 
@@ -12,7 +12,6 @@ Consult docs only when relevant to the task:
 - [Roadmap](./docs/ROADMAP.md) - outcomes, horizons, and what is deliberately not prioritized
 - [Design Docs](./docs/designs/) - canonical component design docs
 - [Feature Docs](./docs/features/) - feature behavior and product decisions
-- [Plans](./docs/plans/) - plans to implement
 - Research Docs (`docs/research/`) - spike and measurement results, named `YYYY-MM-<topic>.md`; create the directory with the first result
 
 ## Operating Principles

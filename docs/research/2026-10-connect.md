@@ -4,8 +4,6 @@
 
 **Result:** Pass (C0 spike and C5 client); `tailscale serve` to a Unix socket carries the API, its event streams, and the SSH upgrade tunnel, so `tsnet` is not needed
 
-**Plan:** [Install, Configure, Connect](../plans/2026-10-connect-and-web-ui.md#milestones), step C0
-
 **Scripts:** `experiments/connect-spike/` (`host.sh` on the host, `client.sh` on a tailnet client)
 
 ---
@@ -19,7 +17,7 @@ A spike server behind `tailscale serve --https=8443 unix:/run/boxface-spike/api.
 - SSH sessions through the tunnel stayed open for 2 hours idle, with and without client keepalives.
 - After a network switch, reconnecting found the tmux session and its process still running.
 
-The plan's main concern was reports of upgraded connections dropping behind `tailscale serve` ([tailscale#18827](https://github.com/tailscale/tailscale/issues/18827)). That did not happen here, so C4 builds the gateway on the Unix socket listener from C2.
+The main concern was reports of upgraded connections dropping behind `tailscale serve` ([tailscale#18827](https://github.com/tailscale/tailscale/issues/18827)). That did not happen here, so C4 builds the gateway on the Unix socket listener from C2.
 
 ## Environment
 
@@ -30,7 +28,7 @@ The plan's main concern was reports of upgraded connections dropping behind `tai
 | Path | Client → `https://<host>.<tailnet>.ts.net:8443` → `tailscale serve` → Unix socket (mode 0600, root) → spike server → host `sshd` on `127.0.0.1:22` |
 | Device | User-owned (not tagged), so identity headers are set |
 
-The plan asked for the host's public address to be firewalled off. It was left open, but every check used the tailnet URL, which is reachable only through Tailscale. The public-address path is covered in C7.
+The spike was to run with the host's public address firewalled off. It was left open, but every check used the tailnet URL, which is reachable only through Tailscale. The public-address path is covered in C7.
 
 `tailscale serve` had to be enabled for the tailnet once in the admin console. The first `host.sh start` printed the link to do so.
 
@@ -47,7 +45,7 @@ The plan asked for the host's public address to be firewalled off. It was left o
 | Idle 2 hours, `ServerAliveInterval 15` | Pass: survived 7200 s; closed at 2h0m1s by the client |
 | Network switch with tmux reattach | Pass: after switching networks the session dropped (server log: a 2m10s tunnel closed); reconnecting found the same tmux session with the process still running |
 
-## Consequences for the Plan
+## Consequences
 
 - The gateway uses `tailscale serve` to the API's Unix socket; `tsnet` stays a fallback only.
 - The client forces HTTP/1.1 through ALPN for the tunnel, since upgrades through `tailscale serve` work only on HTTP/1.1 ([tailscale#20882](https://github.com/tailscale/tailscale/issues/20882)). Other API calls may use HTTP/2.
@@ -77,8 +75,6 @@ Same droplet and client. The current `boxface-api` and `boxface-worker` were ins
 ## Acceptance (C7)
 
 **Date:** 2026-10-10. **Result:** A1–A8 pass on the droplet, with one design gap found: a device key registered after an environment is created is not accepted by that environment.
-
-**Plan:** [acceptance scenarios](../plans/2026-10-connect-and-web-ui.md#acceptance-scenarios)
 
 ### Setup
 
@@ -121,6 +117,6 @@ Both exposures meet the provisional 3-second attachment target. Tunnel survival 
 
 ### Finding: a new device cannot connect to existing environments
 
-A second client config logged in over Tailscale with no code, generated and registered its own device key, and then `connect travel` failed with `Permission denied (publickey)`: `travel` was seeded with the keys registered when it was created. This follows the plan's scope (updating SSH keys inside existing environments is deferred), but every additional device, such as a tablet next to a laptop, hits it on every environment created before it logged in. The CLI also reports it as "connection lost or refused", which does not point at keys. Copying the first device's key into the second config made the rest of A7 pass. Options are recorded in the plan's open questions.
+A second client config logged in over Tailscale with no code, generated and registered its own device key, and then `connect travel` failed with `Permission denied (publickey)`: `travel` was seeded with the keys registered when it was created. This followed the scope at the time (updating SSH keys inside existing environments was deferred), but every additional device, such as a tablet next to a laptop, hits it on every environment created before it logged in. The CLI also reports it as "connection lost or refused", which does not point at keys. Copying the first device's key into the second config made the rest of A7 pass.
 
-**Resolution (same day):** keys now reach the VM on a read-only drive at every start ([plan](../plans/2026-10-connect-and-web-ui.md#open-questions)). On the droplet, with the image rebuilt: a second device that logged in over Tailscale ran `connect multi` against a running environment and got "multi does not accept this device's key yet" with the restart command; after `stop multi`, its `connect` started `multi` and landed in tmux `main`, and the first device still connected. The worker integration test shows a key passed at start accepted, a key left out at start refused, and a key registered while the VM ran refused until its next start. `travel`, created on the previous image, still connected with its create-time keys.
+**Resolution (same day):** keys now reach the VM on a read-only drive at every start. On the droplet, with the image rebuilt: a second device that logged in over Tailscale ran `connect multi` against a running environment and got "multi does not accept this device's key yet" with the restart command; after `stop multi`, its `connect` started `multi` and landed in tmux `main`, and the first device still connected. The worker integration test shows a key passed at start accepted, a key left out at start refused, and a key registered while the VM ran refused until its next start. `travel`, created on the previous image, still connected with its create-time keys.
