@@ -89,7 +89,7 @@ spec:
 
 Saved recipes and profiles can be referenced by ID instead of embedded in a bundle. For the MVP, support the bundle plus saved selections; avoid a general inheritance language.
 
-- Explicit CLI selections override server defaults.
+- Explicit CLI selections override the `default` template.
 - Resource overrides can override saved sizes within host limits.
 - Reject ambiguous duplicate definitions instead of silently merging nested security configuration.
 - Server defaults allow creating an environment with no supplied file. A new environment resolves defaults once and records exact revisions. A server with no default returns a clear selection requirement instead of guessing.
