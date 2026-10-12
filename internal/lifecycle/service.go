@@ -63,15 +63,19 @@ type Environment struct {
 	ProfileLatest int    `json:"profile_latest_ready,omitempty"`
 }
 
-type Defaults struct {
+const DefaultTemplate = "default"
+
+type Template struct {
+	Name      string `json:"name"`
 	Image     string `json:"image"`
+	Profile   string `json:"profile"`
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB int    `json:"memory_mib"`
 	DiskGiB   int    `json:"disk_gib"`
-	Profile   string `json:"profile"`
+	Saved     bool   `json:"saved"`
 }
 
-var builtinDefaults = Defaults{Image: "main", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Profile: "main"}
+var builtinTemplate = Template{Name: DefaultTemplate, Image: "main", Profile: "main", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}
 
 type createParams struct {
 	CreateRequest
@@ -111,7 +115,7 @@ func (s *Service) Create(ctx context.Context, ownerID, idempotencyKey string, re
 		return Accepted{}, fmt.Errorf("%w: name must match %s", ErrInvalid, namePattern)
 	}
 	return s.submit(ctx, ownerID, idempotencyKey, TypeCreate, req, func(tx *sql.Tx, opID string) (string, any, error) {
-		d, err := defaults(ctx, tx, ownerID)
+		d, err := template(ctx, tx, ownerID, DefaultTemplate)
 		if err != nil {
 			return "", nil, err
 		}
@@ -227,37 +231,49 @@ func authorizedKeys(ctx context.Context, q queryer, ownerID string) ([]string, e
 	return keys, nil
 }
 
-func defaults(ctx context.Context, q queryer, ownerID string) (Defaults, error) {
-	var d Defaults
-	err := q.QueryRowContext(ctx, `SELECT image, vcpus, memory_mib, disk_gib, profile FROM owner_defaults WHERE owner_id = ?`, ownerID).
-		Scan(&d.Image, &d.VCPUs, &d.MemoryMiB, &d.DiskGiB, &d.Profile)
+func template(ctx context.Context, q queryer, ownerID, name string) (Template, error) {
+	if name != DefaultTemplate {
+		return Template{}, fmt.Errorf("%w: no template named %q; only %q exists", ErrNotFound, name, DefaultTemplate)
+	}
+	t := Template{Name: name, Saved: true}
+	err := q.QueryRowContext(ctx, `SELECT image, profile, vcpus, memory_mib, disk_gib FROM templates WHERE owner_id = ? AND name = ?`, ownerID, name).
+		Scan(&t.Image, &t.Profile, &t.VCPUs, &t.MemoryMiB, &t.DiskGiB)
 	if errors.Is(err, sql.ErrNoRows) {
-		return builtinDefaults, nil
+		return builtinTemplate, nil
 	}
-	return d, err
+	return t, err
 }
 
-func (s *Service) Defaults(ctx context.Context, ownerID string) (Defaults, error) {
-	return defaults(ctx, s.db, ownerID)
+func (s *Service) Templates(ctx context.Context, ownerID string) ([]Template, error) {
+	t, err := template(ctx, s.db, ownerID, DefaultTemplate)
+	if err != nil {
+		return nil, err
+	}
+	return []Template{t}, nil
 }
 
-func (s *Service) DefaultsSaved(ctx context.Context, ownerID string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM owner_defaults WHERE owner_id = ?`, ownerID).Scan(&n)
-	return n > 0, err
+func (s *Service) Template(ctx context.Context, ownerID, name string) (Template, error) {
+	return template(ctx, s.db, ownerID, name)
 }
 
-func (s *Service) SetDefaults(ctx context.Context, ownerID string, d Defaults) error {
-	if d.Image == "" || d.VCPUs < 1 || d.MemoryMiB < 128 || d.DiskGiB < 1 {
-		return fmt.Errorf("%w: image is required; vcpus must be at least 1, memory_mib at least 128, disk_gib at least 1", ErrInvalid)
+func (s *Service) SetTemplate(ctx context.Context, ownerID, name string, t Template) (Template, error) {
+	if name != DefaultTemplate {
+		return Template{}, fmt.Errorf("%w: no template named %q; only %q exists", ErrNotFound, name, DefaultTemplate)
 	}
-	if d.Profile == "" {
-		d.Profile = builtinDefaults.Profile
+	if t.Image == "" || t.VCPUs < 1 || t.MemoryMiB < 128 || t.DiskGiB < 1 {
+		return Template{}, fmt.Errorf("%w: image is required; vcpus must be at least 1, memory_mib at least 128, disk_gib at least 1", ErrInvalid)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO owner_defaults (owner_id, image, vcpus, memory_mib, disk_gib, profile, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (owner_id) DO UPDATE SET image = excluded.image, vcpus = excluded.vcpus, memory_mib = excluded.memory_mib,
-		disk_gib = excluded.disk_gib, profile = excluded.profile, updated_at = excluded.updated_at`, ownerID, d.Image, d.VCPUs, d.MemoryMiB, d.DiskGiB, d.Profile, timestamp())
-	return err
+	if t.Profile == "" {
+		t.Profile = builtinTemplate.Profile
+	}
+	t.Name, t.Saved = name, true
+	_, err := s.db.ExecContext(ctx, `INSERT INTO templates (owner_id, name, image, profile, vcpus, memory_mib, disk_gib, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (owner_id, name) DO UPDATE SET image = excluded.image, profile = excluded.profile, vcpus = excluded.vcpus,
+		memory_mib = excluded.memory_mib, disk_gib = excluded.disk_gib, updated_at = excluded.updated_at`, ownerID, name, t.Image, t.Profile, t.VCPUs, t.MemoryMiB, t.DiskGiB, timestamp())
+	if err != nil {
+		return Template{}, err
+	}
+	return t, nil
 }
 
 func (s *Service) Start(ctx context.Context, ownerID, idempotencyKey, environmentID string) (Accepted, error) {
