@@ -671,6 +671,13 @@ func (c *cli) connect(ctx context.Context, args []string) error {
 	dir := filepath.Dir(c.configPath)
 	if pub, err := os.ReadFile(filepath.Join(dir, "id_ed25519.pub")); err == nil && len(conn.Fingerprints) > 0 {
 		if _, fp, err := sshkeys.Parse(string(pub)); err == nil && !slices.Contains(conn.Fingerprints, fp) {
+			keys, err := api.SSHKeys(ctx)
+			if err != nil {
+				return err
+			}
+			if !slices.ContainsFunc(keys, func(k sshkeys.Key) bool { return k.Fingerprint == fp }) {
+				return fmt.Errorf("this device's SSH key is not registered with the server, so %s cannot accept it; it was removed, or registered under another login.\nregister it again, then restart %s: boxfacectl login && boxfacectl stop %s && boxfacectl connect %s", env.Name, env.Name, env.Name, env.Name)
+			}
 			return fmt.Errorf("%s does not accept this device's key yet: keys apply when an environment starts, and %s started before this device logged in.\nrestart it to apply the key: boxfacectl stop %s && boxfacectl connect %s", env.Name, env.Name, env.Name, env.Name)
 		}
 	}

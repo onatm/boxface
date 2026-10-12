@@ -147,6 +147,14 @@ func (c *Client) AddSSHKey(ctx context.Context, name, publicKey string) (sshkeys
 	return k, err
 }
 
+func (c *Client) SSHKeys(ctx context.Context) ([]sshkeys.Key, error) {
+	var out struct {
+		Keys []sshkeys.Key `json:"ssh_keys"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/ssh-keys", nil, nil, &out)
+	return out.Keys, err
+}
+
 func (c *Client) Create(ctx context.Context, idempotencyKey string, req lifecycle.CreateRequest) (lifecycle.Accepted, error) {
 	var acc lifecycle.Accepted
 	err := c.do(ctx, http.MethodPost, "/v1/environments", req, key(idempotencyKey), &acc)

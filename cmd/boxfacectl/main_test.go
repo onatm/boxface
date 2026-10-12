@@ -18,6 +18,7 @@ import (
 
 	"github.com/onatm/boxface/internal/api"
 	"github.com/onatm/boxface/internal/auth"
+	"github.com/onatm/boxface/internal/client"
 	"github.com/onatm/boxface/internal/images"
 	"github.com/onatm/boxface/internal/lifecycle"
 	"github.com/onatm/boxface/internal/sshkeys"
@@ -412,6 +413,49 @@ func TestLoginWithTailscaleIdentityNeedsNoCode(t *testing.T) {
 	h.ok("list")
 	if code, _, errOut := h.run(context.Background(), h.code+"\n", true, "login", h.server); code != exitOK || !strings.Contains(errOut, "logged in") {
 		t.Fatalf("code login on a plain listener: exit %d, %s", code, errOut)
+	}
+}
+
+func TestConnectWithARemovedDeviceKeyAsksForLogin(t *testing.T) {
+	h := newHarness(t)
+	h.createMain()
+	var cfg struct {
+		Token string `json:"token"`
+	}
+	b, err := os.ReadFile(h.config)
+	if err != nil || json.Unmarshal(b, &cfg) != nil {
+		t.Fatalf("config: %v", err)
+	}
+	api := client.New(h.server, cfg.Token)
+	ctx := context.Background()
+	keys, err := api.SSHKeys(ctx)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("keys = %v, %v", keys, err)
+	}
+	if _, err := api.AddSSHKey(ctx, "laptop", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPt5LCJRq9y4c8J1YZeCdDw7TP7B5LlgxGVVvhVUhQuN laptop"); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodDelete, h.server+"/v1/ssh-keys/"+keys[0].ID, nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove device key: %v, %v", resp, err)
+	}
+	h.ok("stop", "travel")
+	h.ok("start", "travel")
+
+	status, _, errOut := h.run(ctx, "", false, "connect", "travel")
+	if status != exitError || !strings.Contains(errOut, "not registered") || !strings.Contains(errOut, "boxfacectl login") || len(h.sshCalls) != 0 {
+		t.Fatalf("connect with a removed key: exit %d, ssh %v, %s", status, h.sshCalls, errOut)
+	}
+	code, err := h.authStore.Bootstrap(ctx, "onat", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ok("login", h.server, "--code", code)
+	h.ok("stop", "travel")
+	h.ok("connect", "travel")
+	if len(h.sshCalls) != 1 {
+		t.Fatalf("ssh calls after logging in again and restarting = %v", h.sshCalls)
 	}
 }
 
