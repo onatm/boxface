@@ -53,3 +53,16 @@
 - Replace "scripts never run" with: `run_` scripts are excluded, and templates and `modify_` scripts run in the builder only.
 - Render with `chezmoi archive --exclude=scripts,encrypted` as `dev`, `HOME=/home/dev`, hostname `boxface`; build the manifest from `managed --path-style=source-relative`.
 - Plain repositories: detect them as in finding 5 and either copy them as they are or fail with a message; this is the plan's open question, and the owner decides.
+
+## Host Run
+
+**Date:** 2026-10-12, on the droplet, services at `3d4b5bd` with the fixes below; base and builder images from `images/profile-images.sh` (kernel and mkosi checkout reused from Gate A and Gate C).
+
+| Check | Result |
+|---|---|
+| Base image contract check | Failed first on a correct image: enable links are absolute (`/etc/systemd/system/…`), and `[ -e ]` followed them on the build host. Fixed to test the link itself; the base image then passed |
+| Plain repository (`mathiasbynens/dotfiles`) | Profile built; 25 top-level dotfiles copied; an environment seeded them, including `.vim/` contents, and left out `README.md` and `bootstrap.sh` |
+| chezmoi repository (`twpayne/dotfiles`, commit `b74c1055`) | Failed first: `map has no entry for key "ephemeral"`, because its data comes from `.chezmoi.toml.tmpl`, which only `chezmoi init` evaluates. Fixed by running `init --promptDefaults` into a config file of the template's format, on a `dev`-owned copy of the source (init creates a `.git` there). Then: 15 files rendered; an environment started in 7 s and seeded them, with `user.name` from the computed config |
+| Config template formats | `.chezmoi.yaml.tmpl` and `.chezmoi.toml.tmpl` both render with prompt defaults |
+| Guest | No chezmoi in the environment; `boxface-personalise` and `boxface-home-files` active; the rendered tree on `/dev/vdd` is read-only |
+| Device revocation | Revoking the test device removed its SSH key and its token returned 401 |
