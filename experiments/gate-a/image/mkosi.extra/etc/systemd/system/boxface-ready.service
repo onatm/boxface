@@ -2,10 +2,13 @@
 Description=Report guest readiness over vsock
 After=ssh.service boxface-data.service
 Requires=ssh.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/bin/sh -c 'echo ready | socat - VSOCK-CONNECT:2:1024'
+Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target

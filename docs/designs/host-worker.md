@@ -54,11 +54,13 @@ stateDiagram-v2
 
 ### VM Processes
 
-Each Firecracker VM runs in a systemd transient unit named `boxface-vm-<environment-id>.service`, as an unprivileged `boxface-vm` user with access to `/dev/kvm` and the environment's tap device. The unit name identifies the owning environment, VMs keep running when the worker restarts, a host reboot ends them, and cgroup limits enforce memory and CPU. The Firecracker jailer is deferred.
+Each Firecracker VM runs in a systemd transient unit named `boxface-vm-<environment-id>.service`, as an unprivileged `boxface-vm` user with access to `/dev/kvm` and the environment's tap device. The unit name identifies the owning environment, VMs keep running when the worker restarts, a host reboot ends them, and cgroup limits enforce memory and CPU; `MemoryMax` is the guest memory plus 256 MiB for Firecracker. The Firecracker jailer is deferred.
+
+The guest's readiness report retries until it is delivered, and the worker listens on each running VM's vsock socket again after a restart, so a report sent while the worker restarts is not lost.
 
 ### Networking
 
-- Each environment gets a `/30` from a configured pool and its own tap device. The guest address is passed on the kernel command line (`ip=`) and applied by `systemd-network-generator`, so one image serves every environment.
+- Each environment gets a `/30` from a configured pool (default `172.20.0.0/16`) and its own tap device, `bfx` plus the start of the environment ID. Removing the network releases the address; the next start may allocate a different one. The guest address is passed on the kernel command line (`ip=`) and applied by `systemd-network-generator`, so one image serves every environment.
 - nftables allow guest traffic to the internet and drop guest traffic to the host and to other guests.
 - Deny management-plane and other-guest access by default. Allow required outbound development traffic under a configurable policy.
 

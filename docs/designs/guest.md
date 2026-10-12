@@ -70,7 +70,8 @@ A small Boxface service inside the guest reports readiness, coordinates lifecycl
 
 - Use vsock where supported. Bind its control connection to the specific environment and worker; vsock is transport, not sufficient authorisation by itself.
 - Keep its privileged interface narrow and launch developer commands under the environment owner's guest UID.
-- The worker distinguishes "VMM running" from "guest ready" using this service's readiness report.
+- The worker distinguishes "VMM running" from "guest ready" using this service's readiness report, which retries until delivered.
+- The guest's network address comes from the kernel command line (`ip=`), applied by `systemd-network-generator`; the image has no static network configuration.
 
 ### Security & Privacy
 
