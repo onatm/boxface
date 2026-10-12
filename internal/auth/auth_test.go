@@ -73,9 +73,26 @@ func TestRevokedTokenRejected(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	code, _ := s.Bootstrap(ctx, "onat", time.Minute)
-	token, _, _ := s.Login(ctx, code, "tablet", "127.0.0.1")
+	token, owner, _ := s.Login(ctx, code, "tablet", "127.0.0.1")
+	_, tokenID, _ := s.Authenticate(ctx, token)
+	if _, err := s.db.Exec(`INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at, token_id) VALUES
+		('k1', ?, 'tablet', 'ssh-ed25519 A', 'SHA256:a', '2026-10-12T00:00:00Z', ?), ('k2', ?, 'pasted', 'ssh-ed25519 B', 'SHA256:b', '2026-10-12T00:00:00Z', NULL)`,
+		owner, tokenID, owner); err != nil {
+		t.Fatal(err)
+	}
 	if n, err := s.RevokeAll(ctx, "onat"); err != nil || n != 1 {
 		t.Fatalf("revoked %d, %v", n, err)
+	}
+	var keys []string
+	rows, _ := s.db.Query(`SELECT id FROM ssh_keys ORDER BY id`)
+	for rows.Next() {
+		var id string
+		rows.Scan(&id)
+		keys = append(keys, id)
+	}
+	rows.Close()
+	if len(keys) != 1 || keys[0] != "k2" {
+		t.Fatalf("keys after revoking all = %v; want only the pasted key", keys)
 	}
 	if _, _, err := s.Authenticate(ctx, token); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("err = %v", err)

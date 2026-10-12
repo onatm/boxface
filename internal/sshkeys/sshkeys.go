@@ -36,6 +36,7 @@ type Key struct {
 	Name        string `json:"name"`
 	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
+	DeviceID    string `json:"device_id,omitempty"`
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -80,7 +81,7 @@ func validName(name string) bool {
 	return true
 }
 
-func (s *Store) Add(ctx context.Context, ownerID, name, line string) (Key, bool, error) {
+func (s *Store) Add(ctx context.Context, ownerID, deviceID, name, line string) (Key, bool, error) {
 	if !validName(name) {
 		return Key{}, false, fmt.Errorf("%w: name must be 1 to 64 printable characters", ErrInvalid)
 	}
@@ -88,22 +89,27 @@ func (s *Store) Add(ctx context.Context, ownerID, name, line string) (Key, bool,
 	if err != nil {
 		return Key{}, false, err
 	}
-	k := Key{ID: id.New(), Name: name, PublicKey: publicKey, Fingerprint: fingerprint, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (owner_id, fingerprint) DO NOTHING`, k.ID, ownerID, k.Name, k.PublicKey, k.Fingerprint, k.CreatedAt)
+	k := Key{ID: id.New(), Name: name, PublicKey: publicKey, Fingerprint: fingerprint, DeviceID: deviceID, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO ssh_keys (id, owner_id, name, public_key, fingerprint, created_at, token_id) VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, ''))
+		ON CONFLICT (owner_id, fingerprint) DO NOTHING`, k.ID, ownerID, k.Name, k.PublicKey, k.Fingerprint, k.CreatedAt, deviceID)
 	if err != nil {
 		return Key{}, false, err
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
 		return k, true, nil
 	}
-	err = s.db.QueryRowContext(ctx, `SELECT id, name, public_key, created_at FROM ssh_keys WHERE owner_id = ? AND fingerprint = ?`, ownerID, fingerprint).
-		Scan(&k.ID, &k.Name, &k.PublicKey, &k.CreatedAt)
+	if deviceID != "" {
+		if _, err := s.db.ExecContext(ctx, `UPDATE ssh_keys SET token_id = ? WHERE owner_id = ? AND fingerprint = ?`, deviceID, ownerID, fingerprint); err != nil {
+			return Key{}, false, err
+		}
+	}
+	err = s.db.QueryRowContext(ctx, `SELECT id, name, public_key, coalesce(token_id, ''), created_at FROM ssh_keys WHERE owner_id = ? AND fingerprint = ?`, ownerID, fingerprint).
+		Scan(&k.ID, &k.Name, &k.PublicKey, &k.DeviceID, &k.CreatedAt)
 	return k, false, err
 }
 
 func (s *Store) List(ctx context.Context, ownerID string) ([]Key, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, public_key, fingerprint, created_at FROM ssh_keys WHERE owner_id = ? ORDER BY created_at, rowid`, ownerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, public_key, fingerprint, coalesce(token_id, ''), created_at FROM ssh_keys WHERE owner_id = ? ORDER BY created_at, rowid`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +117,7 @@ func (s *Store) List(ctx context.Context, ownerID string) ([]Key, error) {
 	list := []Key{}
 	for rows.Next() {
 		var k Key
-		if err := rows.Scan(&k.ID, &k.Name, &k.PublicKey, &k.Fingerprint, &k.CreatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.Name, &k.PublicKey, &k.Fingerprint, &k.DeviceID, &k.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, k)

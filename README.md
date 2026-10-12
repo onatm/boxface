@@ -267,7 +267,7 @@ runuser -u boxface -- boxface-api secrets rekey -from file:///var/lib/boxface/ap
 - **If a start fails,** the environment is left `stopped` with the error. Its disk is kept.
 - **Limits:** the API allows at most 4 environments by default. Change this by overriding the service command (`systemctl edit boxface-api`) to pass `-max-environments`, `-max-vcpus`, `-max-memory-mib`, or `-max-disk-gib`.
 - **Deleted environments** with a kept disk stay listed until purged.
-- **Tokens:** `runuser -u boxface -- boxface-api revoke -owner <your-name>` revokes all of your tokens.
+- **Tokens:** `runuser -u boxface -- boxface-api revoke -owner <your-name>` revokes all of your tokens and removes the SSH keys those devices registered. To revoke one device, use the web UI's Clients page.
 
 ## Operate the host
 
