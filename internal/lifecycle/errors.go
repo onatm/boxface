@@ -9,4 +9,5 @@ var (
 	ErrEnvironmentDeleted  = errors.New("environment is deleted")
 	ErrImageNotReady       = errors.New("image is not ready")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different parameters")
+	ErrCapacity            = errors.New("capacity exceeded")
 )

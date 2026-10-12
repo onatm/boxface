@@ -1,0 +1,301 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/onatm/boxface/internal/auth"
+	"github.com/onatm/boxface/internal/images"
+	"github.com/onatm/boxface/internal/lifecycle"
+	"github.com/onatm/boxface/internal/version"
+)
+
+const maxBody = 1 << 20
+
+type Server struct {
+	Auth         *auth.Store
+	Lifecycle    *lifecycle.Service
+	Images       *images.Registry
+	Capacity     lifecycle.Capacity
+	PollInterval time.Duration
+}
+
+type ownerKey struct{}
+
+type apiError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("POST /v1/login", s.login)
+	authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, s.authenticate(h)) }
+	authed("GET /v1/capabilities", s.capabilities)
+	authed("POST /v1/images", s.importImage)
+	authed("GET /v1/images", s.listImages)
+	authed("POST /v1/environments", s.createEnvironment)
+	authed("GET /v1/environments", s.listEnvironments)
+	authed("GET /v1/environments/{id}", s.getEnvironment)
+	authed("POST /v1/environments/{id}/start", s.startEnvironment)
+	authed("POST /v1/environments/{id}/stop", s.stopEnvironment)
+	authed("DELETE /v1/environments/{id}", s.deleteEnvironment)
+	authed("GET /v1/operations/{id}", s.getOperation)
+	authed("GET /v1/operations/{id}/events", s.operationEvents)
+	return mux
+}
+
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || token == "" {
+			writeError(w, auth.ErrUnauthorized)
+			return
+		}
+		owner, err := s.Auth.Authenticate(r.Context(), token)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ownerKey{}, owner)))
+	})
+}
+
+func owner(r *http.Request) string { return r.Context().Value(ownerKey{}).(string) }
+
+func decode(w http.ResponseWriter, r *http.Request, v any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("%w: %v", lifecycle.ErrInvalid, err)
+	}
+	return nil
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	token, ownerID, err := s.Auth.Login(r.Context(), req.Code)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": token, "owner_id": ownerID})
+}
+
+func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":      version.Version,
+		"architecture": runtime.GOARCH,
+		"hypervisor":   "firecracker",
+		"capacity": map[string]int{
+			"environments": s.Capacity.Environments,
+			"vcpus":        s.Capacity.VCPUs,
+			"memory_mib":   s.Capacity.MemoryMiB,
+			"disk_gib":     s.Capacity.DiskGiB,
+		},
+	})
+}
+
+func (s *Server) importImage(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Source string `json:"source"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	img, created, err := s.Images.Import(r.Context(), req.Source)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, img)
+}
+
+func (s *Server) listImages(w http.ResponseWriter, r *http.Request) {
+	list, err := s.Images.List(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"images": list})
+}
+
+func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
+	var req lifecycle.CreateRequest
+	if err := decode(w, r, &req); err != nil {
+		writeError(w, err)
+		return
+	}
+	acc, err := s.Lifecycle.Create(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), req)
+	writeAccepted(w, acc, err)
+}
+
+func (s *Server) listEnvironments(w http.ResponseWriter, r *http.Request) {
+	envs, err := s.Lifecycle.Environments(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"environments": envs})
+}
+
+func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
+	env, err := s.Lifecycle.Environment(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
+func (s *Server) startEnvironment(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.Lifecycle.Start(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), r.PathValue("id"))
+	writeAccepted(w, acc, err)
+}
+
+func (s *Server) stopEnvironment(w http.ResponseWriter, r *http.Request) {
+	acc, err := s.Lifecycle.Stop(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), r.PathValue("id"))
+	writeAccepted(w, acc, err)
+}
+
+func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
+	purge := false
+	if v := r.URL.Query().Get("purge"); v != "" {
+		var err error
+		if purge, err = strconv.ParseBool(v); err != nil {
+			writeError(w, fmt.Errorf("%w: purge must be true or false", lifecycle.ErrInvalid))
+			return
+		}
+	}
+	acc, err := s.Lifecycle.Delete(r.Context(), owner(r), r.Header.Get("Idempotency-Key"), r.PathValue("id"), purge)
+	writeAccepted(w, acc, err)
+}
+
+func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
+	op, err := s.Lifecycle.Operation(r.Context(), owner(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, op)
+}
+
+func terminal(state string) bool {
+	return state == "succeeded" || state == "failed" || state == "cancelled"
+}
+
+func (s *Server) operationEvents(w http.ResponseWriter, r *http.Request) {
+	ctx, id := r.Context(), r.PathValue("id")
+	op, err := s.Lifecycle.Operation(ctx, owner(r), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, errors.New("streaming unsupported"))
+		return
+	}
+	last, _ := strconv.Atoi(r.Header.Get("Last-Event-ID"))
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+
+	for {
+		for i, step := range op.CompletedSteps {
+			if i+1 > last {
+				writeEvent(w, i+1, "step", map[string]string{"step": step})
+				last = i + 1
+			}
+		}
+		if terminal(op.State) {
+			if len(op.CompletedSteps)+1 > last {
+				writeEvent(w, len(op.CompletedSteps)+1, "state", op)
+			}
+			flusher.Flush()
+			return
+		}
+		flusher.Flush()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(s.PollInterval):
+		}
+		if op, err = s.Lifecycle.Operation(ctx, owner(r), id); err != nil {
+			return
+		}
+	}
+}
+
+func writeEvent(w http.ResponseWriter, id int, event string, data any) {
+	b, _ := json.Marshal(data)
+	fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, b)
+}
+
+func writeAccepted(w http.ResponseWriter, acc lifecycle.Accepted, err error) {
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Location", "/v1/operations/"+acc.OperationID)
+	writeJSON(w, http.StatusAccepted, acc)
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, err error) {
+	status, code := http.StatusInternalServerError, "internal_error"
+	for _, m := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{auth.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
+		{lifecycle.ErrInvalid, http.StatusBadRequest, "invalid_request"},
+		{images.ErrInvalidSource, http.StatusBadRequest, "invalid_request"},
+		{lifecycle.ErrNotFound, http.StatusNotFound, "not_found"},
+		{lifecycle.ErrNameTaken, http.StatusConflict, "name_taken"},
+		{lifecycle.ErrEnvironmentDeleted, http.StatusConflict, "environment_deleted"},
+		{lifecycle.ErrImageNotReady, http.StatusConflict, "image_not_ready"},
+		{lifecycle.ErrIdempotencyConflict, http.StatusConflict, "idempotency_conflict"},
+		{lifecycle.ErrCapacity, http.StatusConflict, "capacity_exceeded"},
+	} {
+		if errors.Is(err, m.err) {
+			status, code = m.status, m.code
+			break
+		}
+	}
+	message := err.Error()
+	if status == http.StatusInternalServerError {
+		slog.Error("request failed", "error", err)
+		message = "internal error"
+	}
+	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Retryable: status >= 500}})
+}

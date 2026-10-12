@@ -23,32 +23,39 @@ The Boxface API authenticates clients, authorises access, validates configuratio
 
 ### Routes
 
-All routes are proposed and versioned under `/v1`. Require authentication for every operation and authorise ownership per resource.
+Routes are versioned under `/v1`. Every route except `GET /health` and `POST /v1/login` requires a bearer token, and ownership is authorised per resource. Routes marked *implemented* exist; the rest are proposed.
 
 | Method and route | Purpose |
 | --- | --- |
-| `GET /health` | Minimal liveness; no sensitive metadata |
-| `GET /v1/capabilities` | Runtime, architecture, schema and supported feature information |
+| `GET /health` | Minimal liveness; no sensitive metadata. *Implemented* |
+| `POST /v1/login` | Exchange a one-time bootstrap code for an API token. *Implemented* |
+| `GET /v1/capabilities` | Version, architecture, hypervisor, and capacity limits. *Implemented* |
 | `POST /v1/recipes` | Validate/store recipe revision |
 | `POST /v1/profiles` | Validate/store user-profile revision |
 | `POST /v1/images/build` | Create asynchronous image-build operation |
-| `GET /v1/images` | List ready/failed image revisions |
-| `POST /v1/environments` | Create from saved or submitted definition |
-| `GET /v1/environments` | List authorised environments |
-| `GET /v1/environments/{id}` | Inspect revision, state, resources, operations |
-| `POST /v1/environments/{id}/start` | Start retained environment |
-| `POST /v1/environments/{id}/stop` | Graceful shutdown |
-| `DELETE /v1/environments/{id}` | Remove environment; preserve data unless explicit purge |
+| `POST /v1/images` | Register an artifact set staged in the import directory, `{"source": "<name>"}`; `201` when new, `200` with the existing image when the content digest matches. *Implemented* |
+| `GET /v1/images` | List ready/failed image revisions. *Implemented* |
+| `POST /v1/environments` | Create from saved or submitted definition. *Implemented* for `name`, `image_id`, `vcpus`, `memory_mib`, `disk_gib` |
+| `GET /v1/environments` | List authorised environments, including deleted ones whose disk is retained. *Implemented* |
+| `GET /v1/environments/{id}` | Inspect revision, state, resources, operations. *Implemented* |
+| `POST /v1/environments/{id}/start` | Start retained environment. *Implemented* |
+| `POST /v1/environments/{id}/stop` | Graceful shutdown. *Implemented* |
+| `DELETE /v1/environments/{id}` | Remove environment; preserve data unless `?purge=true`. *Implemented* |
 | `POST /v1/environments/{id}/connections` | Obtain authorised SSH connection information |
 | `POST /v1/environments/{id}/sessions` | Start named user session |
 | `GET /v1/environments/{id}/sessions` | List sessions |
 | `POST /v1/environments/{id}/backups` | Back up stopped data disk |
 | `POST /v1/backups/{id}/restore` | Create independent restored environment |
 | `POST /v1/environments/{id}/upgrade` | Explicit revision replacement with backup |
-| `GET /v1/operations/{id}` | Inspect durable operation |
-| `GET /v1/operations/{id}/events` | Stream resumable operation events |
+| `GET /v1/operations/{id}` | Inspect durable operation. *Implemented* |
+| `GET /v1/operations/{id}/events` | Stream resumable operation events. *Implemented* |
 
-Long-running mutations return `202 Accepted`, operation ID, and target ID. Idempotency and serialization rules are in [Operations](./operations.md#interfaces--contracts).
+Long-running mutations return `202 Accepted` with `operation_id` and `environment_id`, and a `Location` header for the operation. The `Idempotency-Key` header carries the idempotency key. Idempotency and serialization rules are in [Operations](./operations.md#interfaces--contracts).
+
+- Request bodies with unknown fields are rejected.
+- Errors are `{"error": {"code", "message", "retryable"}}`. Codes: `unauthorized` (401), `invalid_request` (400), `not_found` (404), and with 409 `name_taken`, `environment_deleted`, `image_not_ready`, `idempotency_conflict`, `capacity_exceeded`. Other failures return `internal_error` (500) without internal detail.
+- Operation events are server-sent events: one `step` event per completed step with IDs from 1, then a final `state` event carrying the operation. A client reconnecting with `Last-Event-ID` receives only later events.
+- Capacity limits on environments, vCPUs, memory, and disk count every environment that is not deleted, whether running or stopped; the disk limit also counts retained disks.
 
 ### Implementation
 
@@ -59,8 +66,9 @@ Long-running mutations return `202 Accepted`, operation ID, and target ID. Idemp
 
 ### Authentication
 
-- For the single-owner MVP, use a one-time local bootstrap flow to issue client credentials.
-- Store revocable token hashes server-side; do not ship a default password.
+- `boxface-api bootstrap -owner NAME`, run on the host as the `boxface` user, creates the owner if needed and prints a one-time login code valid for 15 minutes. `POST /v1/login` exchanges it once for an API token.
+- Codes and tokens are stored only as SHA-256 hashes; there is no default password. `boxface-api revoke -owner NAME` revokes all of an owner's tokens.
+- The API listens on `127.0.0.1:7443` by default without TLS; exposing it on the private network, and TLS, are part of the [Access and Sessions](./access-and-sessions.md) stage.
 - Browser access uses an authenticated secure session and CSRF protection.
 - Full OIDC is deferred.
 
