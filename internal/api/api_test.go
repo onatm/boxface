@@ -429,7 +429,7 @@ func TestSSHKeyRoutes(t *testing.T) {
 	}
 }
 
-func TestTokenRoutes(t *testing.T) {
+func TestDeviceRoutes(t *testing.T) {
 	e := setup(t, lifecycle.Capacity{})
 	code, err := e.authStore.Bootstrap(context.Background(), "one", time.Minute)
 	if err != nil {
@@ -438,18 +438,40 @@ func TestTokenRoutes(t *testing.T) {
 	var login map[string]string
 	e.do("", http.MethodPost, "/v1/login", map[string]string{"code": code, "name": "tablet"}, http.StatusOK, &login)
 	e.tokens["tablet"] = login["token"]
+	var tabletKey sshkeys.Key
+	e.do("tablet", http.MethodPost, "/v1/ssh-keys", map[string]string{"name": "tablet", "public_key": testKeys["two"]}, http.StatusCreated, &tabletKey)
 
 	var list struct {
-		Tokens []auth.Token `json:"tokens"`
+		Devices []struct {
+			auth.Token
+			SSHKeys []sshkeys.Key `json:"ssh_keys"`
+		} `json:"devices"`
 	}
-	e.do("tablet", http.MethodGet, "/v1/tokens", nil, http.StatusOK, &list)
-	if len(list.Tokens) != 2 || list.Tokens[0].Name != "unnamed" || list.Tokens[1].Name != "tablet" || !list.Tokens[1].Current || list.Tokens[0].Current {
-		t.Fatalf("tokens = %+v", list.Tokens)
+	e.do("tablet", http.MethodGet, "/v1/devices", nil, http.StatusOK, &list)
+	if len(list.Devices) != 2 || list.Devices[0].Name != "unnamed" || list.Devices[1].Name != "tablet" || !list.Devices[1].Current || list.Devices[0].Current {
+		t.Fatalf("devices = %+v", list.Devices)
 	}
-	e.errorCode("two", http.MethodDelete, "/v1/tokens/"+list.Tokens[1].ID, nil, http.StatusNotFound)
-	e.do("one", http.MethodDelete, "/v1/tokens/"+list.Tokens[1].ID, nil, http.StatusNoContent, nil)
+	if k := list.Devices[0].SSHKeys; len(k) != 1 || k[0].Name != "laptop" || k[0].DeviceID != list.Devices[0].ID {
+		t.Fatalf("first device keys = %+v", k)
+	}
+	if k := list.Devices[1].SSHKeys; len(k) != 1 || k[0].ID != tabletKey.ID || tabletKey.DeviceID != list.Devices[1].ID {
+		t.Fatalf("tablet keys = %+v, added %+v", k, tabletKey)
+	}
+
+	e.errorCode("two", http.MethodDelete, "/v1/devices/"+list.Devices[1].ID, nil, http.StatusNotFound)
+	e.do("one", http.MethodDelete, "/v1/devices/"+list.Devices[1].ID, nil, http.StatusNoContent, nil)
 	e.errorCode("tablet", http.MethodGet, "/v1/environments", nil, http.StatusUnauthorized)
-	e.do("one", http.MethodGet, "/v1/environments", nil, http.StatusOK, nil)
+	var keys struct {
+		SSHKeys []sshkeys.Key `json:"ssh_keys"`
+	}
+	e.do("one", http.MethodGet, "/v1/ssh-keys", nil, http.StatusOK, &keys)
+	if len(keys.SSHKeys) != 1 || keys.SSHKeys[0].Name != "laptop" {
+		t.Fatalf("keys after revoking the tablet = %+v", keys.SSHKeys)
+	}
+	e.do("two", http.MethodGet, "/v1/ssh-keys", nil, http.StatusOK, &keys)
+	if len(keys.SSHKeys) != 1 {
+		t.Fatalf("revoking one owner's device removed another owner's key: %+v", keys.SSHKeys)
+	}
 }
 
 func TestFailedLoginsAreRateLimited(t *testing.T) {
@@ -623,12 +645,12 @@ func TestTailscaleIdentityLogin(t *testing.T) {
 		t.Fatalf("identity login: status %d, %v", status, login)
 	}
 	e.tokens["tablet"] = login["token"].(string)
-	var tokens struct {
-		Tokens []auth.Token `json:"tokens"`
+	var devices struct {
+		Devices []auth.Token `json:"devices"`
 	}
-	e.do("tablet", http.MethodGet, "/v1/tokens", nil, http.StatusOK, &tokens)
-	if len(tokens.Tokens) != 2 || tokens.Tokens[1].Name != "tablet" {
-		t.Fatalf("owner one tokens = %+v", tokens.Tokens)
+	e.do("tablet", http.MethodGet, "/v1/devices", nil, http.StatusOK, &devices)
+	if len(devices.Devices) != 2 || devices.Devices[1].Name != "tablet" {
+		t.Fatalf("owner one devices = %+v", devices.Devices)
 	}
 	if status, _ := e.tailnetRequest("", http.MethodPost, "/v1/login", "", noCode); status != http.StatusUnauthorized {
 		t.Fatalf("tailnet login without identity: status %d", status)
@@ -740,9 +762,11 @@ func TestWebSessionWithCode(t *testing.T) {
 		}
 	}
 	resp = e.web(e.srv.URL, http.MethodPost, "/v1/ssh-keys", addKey, map[string]string{"Cookie": withCookie["Cookie"], "Sec-Fetch-Site": "same-origin"})
+	var webKey sshkeys.Key
+	json.NewDecoder(resp.Body).Decode(&webKey)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("same-origin POST: status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusCreated || webKey.DeviceID != "" {
+		t.Fatalf("same-origin POST: status %d, key %+v", resp.StatusCode, webKey)
 	}
 
 	var codeResp map[string]string

@@ -350,6 +350,9 @@ func (s *Store) Revoke(ctx context.Context, ownerID, tokenID, remote string) err
 	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrTokenNotFound
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ssh_keys WHERE token_id = ? AND owner_id = ?`, tokenID, ownerID); err != nil {
+		return err
+	}
 	if err := s.event(ctx, tx, ownerID, "token.revoke", tokenID, "", remote); err != nil {
 		return err
 	}
@@ -357,10 +360,23 @@ func (s *Store) Revoke(ctx context.Context, ownerID, tokenID, remote string) err
 }
 
 func (s *Store) RevokeAll(ctx context.Context, ownerName string) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL AND owner_id = (SELECT id FROM owners WHERE name = ?)`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ssh_keys WHERE token_id IN
+		(SELECT id FROM api_tokens WHERE revoked_at IS NULL AND owner_id = (SELECT id FROM owners WHERE name = ?))`, ownerName); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL AND owner_id = (SELECT id FROM owners WHERE name = ?)`,
 		s.timestamp(), ownerName)
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }

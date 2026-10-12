@@ -83,8 +83,8 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /v1/identities", s.bindIdentity)
 	authed("DELETE /v1/identities/{id}", s.unbindIdentity)
 	authed("POST /v1/login-codes", s.issueLoginCode)
-	authed("GET /v1/tokens", s.listTokens)
-	authed("DELETE /v1/tokens/{id}", s.revokeToken)
+	authed("GET /v1/devices", s.listDevices)
+	authed("DELETE /v1/devices/{id}", s.revokeDevice)
 	authed("POST /v1/images", s.importImage)
 	authed("GET /v1/images", s.listImages)
 	authed("GET /v1/image-imports", s.listStaged)
@@ -188,16 +188,35 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"token": token, "owner_id": ownerID})
 }
 
-func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
-	list, err := s.Auth.Tokens(r.Context(), owner(r), r.Context().Value(tokenKey{}).(string))
+type device struct {
+	auth.Token
+	SSHKeys []sshkeys.Key `json:"ssh_keys"`
+}
+
+func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
+	tokens, err := s.Auth.Tokens(r.Context(), owner(r), tokenID(r))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tokens": list})
+	keys, err := s.SSHKeys.List(r.Context(), owner(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	list := make([]device, len(tokens))
+	for i, t := range tokens {
+		list[i] = device{Token: t, SSHKeys: []sshkeys.Key{}}
+		for _, k := range keys {
+			if k.DeviceID == t.ID {
+				list[i].SSHKeys = append(list[i].SSHKeys, k)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": list})
 }
 
-func (s *Server) revokeToken(w http.ResponseWriter, r *http.Request) {
+func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request) {
 	if err := s.Auth.Revoke(r.Context(), owner(r), r.PathValue("id"), clientAddr(r)); err != nil {
 		writeError(w, err)
 		return
@@ -357,7 +376,11 @@ func (s *Server) addSSHKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	k, created, err := s.SSHKeys.Add(r.Context(), owner(r), req.Name, req.PublicKey)
+	deviceID := tokenID(r)
+	if strings.HasPrefix(deviceID, "web:") {
+		deviceID = ""
+	}
+	k, created, err := s.SSHKeys.Add(r.Context(), owner(r), deviceID, req.Name, req.PublicKey)
 	if err != nil {
 		writeError(w, err)
 		return

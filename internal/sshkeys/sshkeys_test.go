@@ -53,15 +53,15 @@ func TestStoreAddIsIdempotentAndOwnerScoped(t *testing.T) {
 	}
 	s, ctx := NewStore(db), context.Background()
 
-	first, created, err := s.Add(ctx, "owner-1", "tablet", key1+" comment")
+	first, created, err := s.Add(ctx, "owner-1", "", "tablet", key1+" comment")
 	if err != nil || !created {
 		t.Fatalf("add = %+v, %v, %v", first, created, err)
 	}
-	again, created, err := s.Add(ctx, "owner-1", "renamed", key1)
+	again, created, err := s.Add(ctx, "owner-1", "", "renamed", key1)
 	if err != nil || created || again.ID != first.ID || again.Name != "tablet" {
 		t.Fatalf("add again = %+v, %v, %v", again, created, err)
 	}
-	if _, _, err := s.Add(ctx, "owner-1", "", key2); !errors.Is(err, ErrInvalid) {
+	if _, _, err := s.Add(ctx, "owner-1", "", "", key2); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty name: err = %v", err)
 	}
 	if err := s.Delete(ctx, "owner-2", first.ID); !errors.Is(err, ErrNotFound) {

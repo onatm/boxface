@@ -217,8 +217,8 @@ function mainImageID(images) {
 }
 
 views.setup = async () => {
-  const [keys, images, defaults, tokens, profiles] = await Promise.all([
-    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/templates/default"), api("GET", "/v1/tokens"), api("GET", "/v1/profiles"),
+  const [keys, images, defaults, devices, profiles] = await Promise.all([
+    api("GET", "/v1/ssh-keys"), api("GET", "/v1/images"), api("GET", "/v1/templates/default"), api("GET", "/v1/devices"), api("GET", "/v1/profiles"),
   ]);
   const defaultProfile = profiles.profiles.find((p) => p.name === (defaults.profile || "main"));
   const steps = [
@@ -226,7 +226,7 @@ views.setup = async () => {
     [mainImageID(images.images) !== null, "Register an image and mark it main", "New environments use the main image unless told otherwise.", "#images"],
     [!!defaultProfile && defaultProfile.latest.state === "ready", `Build the ${defaults.profile || "main"} profile`, "The tools every new environment gets, built from Nix packages.", defaultProfile ? `#profile/${defaultProfile.id}` : "#profile/new"],
     [defaults.saved, "Review default sizes", "vCPUs, memory, and disk for boxfacectl create NAME.", "#defaults"],
-    [tokens.tokens.length > 0, "Log in from the CLI", "Issue a one-time code for each device.", "#clients"],
+    [devices.devices.length > 0, "Log in from the CLI", "Issue a one-time code for each device.", "#clients"],
   ];
   const done = steps.every((s) => s[0]);
   render(
@@ -482,7 +482,7 @@ views.credentials = async () => {
 };
 
 views.clients = async () => {
-  const [tokens, identities] = await Promise.all([api("GET", "/v1/tokens"), api("GET", "/v1/identities")]);
+  const [devices, identities] = await Promise.all([api("GET", "/v1/devices"), api("GET", "/v1/identities")]);
   const issued = h("div", {});
   const issue = h("button", { class: "primary", type: "button" }, "Create a login code");
   issue.addEventListener("click", busy(issue, "Creating…", async () => {
@@ -510,16 +510,19 @@ views.clients = async () => {
     h("h2", {}, "Log in a device"),
     h("div", { class: "card" }, issue, issued),
     h("h2", {}, "Logged-in devices"),
-    tokens.tokens.length === 0 ? h("p", { class: "muted" }, "No CLI logins yet.") : h("div", { class: "table-wrap" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", {}, "Device"), h("th", { class: "optional" }, "Logged in"), h("th", {}, "Last used"), h("th", {}, ""))),
-      h("tbody", {}, tokens.tokens.map((t) => {
+    devices.devices.length === 0 ? h("p", { class: "muted" }, "No CLI logins yet.") : h("div", { class: "table-wrap" }, h("table", {},
+      h("thead", {}, h("tr", {}, h("th", {}, "Device"), h("th", {}, "SSH key"), h("th", { class: "optional" }, "Logged in"), h("th", {}, "Last used"), h("th", {}, ""))),
+      h("tbody", {}, devices.devices.map((d) => {
         const revoke = h("button", { type: "button", class: "danger" }, "Revoke");
         revoke.addEventListener("click", busy(revoke, "Revoking…", async () => {
-          if (!confirm(`Revoke ${t.name}? That device must log in again.`)) return;
-          await api("DELETE", `/v1/tokens/${encodeURIComponent(t.id)}`);
+          const keys = d.ssh_keys.length ? " Its SSH key is removed too; environments stop accepting it at their next start." : "";
+          if (!confirm(`Revoke ${d.name}? That device must log in again.${keys}`)) return;
+          await api("DELETE", `/v1/devices/${encodeURIComponent(d.id)}`);
           await views.clients();
         }));
-        return h("tr", {}, h("td", {}, t.name), h("td", { class: "optional" }, when(t.created_at)), h("td", {}, when(t.last_used_at)), h("td", { class: "actions" }, revoke));
+        return h("tr", {}, h("td", {}, d.name),
+          h("td", { class: "mono" }, d.ssh_keys.length ? d.ssh_keys.map((k) => k.fingerprint).join(", ") : h("span", { class: "muted" }, "none")),
+          h("td", { class: "optional" }, when(d.created_at)), h("td", {}, when(d.last_used_at)), h("td", { class: "actions" }, revoke));
       })))),
     h("h2", {}, "Tailscale sign-in"),
     h("p", { class: "muted" }, "Optional. A bound Tailscale login signs in to this page and to boxfacectl login without a code, but only through tailscale serve."),
