@@ -6,7 +6,7 @@
 
 ## Overview
 
-chezmoi seeds a new environment's home from a pinned profile revision and applies later profile updates without overwriting the user's modifications or agent state.
+Dotfiles in chezmoi format are rendered once, when a profile revision is built, and seeded as plain files into a new environment's home; later profile updates must not overwrite the user's modifications or agent state.
 
 ## Context & Problem
 
@@ -22,7 +22,11 @@ chezmoi seeds a new environment's home from a pinned profile revision and applie
 
 ### Seeding
 
-Use chezmoi to seed a new home from a pinned profile revision. Record the applied revision and managed file manifest. Reboot is not permission to overwrite the home.
+The profile builder renders the dotfiles repository with `chezmoi archive --exclude=scripts,encrypted` inside the builder VM, as UID 1000 `dev` with `HOME=/home/dev` and hostname `boxface`, so templates see what the guest would. Rendering runs the dotfiles' templates and `modify_` scripts, which is why it happens only in the isolated builder, never in the API, on the host for profiles, or in the guest ([render spike](../research/2026-10-dotfiles-render.md)). `run_` scripts never run; encrypted files are skipped and listed in the build log; a template that reads a password manager fails the build with a pointer to Credentials.
+
+The result goes on the profile drive as `boxface/home/` (readable by every user) and `boxface/home.manifest`, one line per entry: kind (`dir`, `file`, `create`, `modify`, `external`, `symlink`), mode, SHA-256 digest or link target, and path. A repository without chezmoi naming is copied as it is: its top-level dot entries except `.git`, `.github`, `.gitignore`, `.gitmodules`, and `.gitattributes`. `images/image.sh` renders `images/dotfiles/` the same way on the host, with chezmoi from the toolset's pinned nixpkgs.
+
+On the first boot of a data disk, `boxface-personalise`, a user service, follows the manifest: it creates missing directories with their recorded modes, copies each file with its mode, replaces links Home Manager generated into `/nix`, and skips any file the user already has. It records the revision, what it seeded and skipped, and a copy of the manifest under `~/.local/state/boxface/`. The guest needs no chezmoi. Reboot is not permission to overwrite the home.
 
 Gate C validated seeding from a read-only, image-embedded source applied once per data disk by a user service, with the revision and managed files recorded under `~/.local/state/boxface/` ([Gate C](../research/2026-10-gate-c.md)). Agents write their own files beside managed ones, as Claude Code does in `~/.claude`, so dotfiles manage individual files, never agent-written ones.
 
@@ -43,11 +47,11 @@ For MVP profile updates:
 ### Security & Privacy
 
 - Personal preferences may be writable. Security-sensitive platform configuration stays outside the user-owned home and cannot depend on chezmoi enforcement.
-- chezmoi hooks are executable input requiring server-side authorisation.
+- chezmoi templates, `modify_` scripts, and externals execute or fetch during rendering, in the builder VM only; `run_` scripts and hooks never run.
 
 ## Open Questions
 
-- [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow. `chezmoi status` reports a user-edited managed file as `MM` ([Gate C](../research/2026-10-gate-c.md)); applying a newer revision is untested.
+- [ ] Decide whether personal file updates need a built-in three-way merge or initially an explicit manual conflict workflow. Each revision's manifest records digests, so a three-way merge (previous rendered file, new rendered file, the user's file) needs no chezmoi in the guest; `create_` files are never updated. `chezmoi status` reports a user-edited managed file as `MM` ([Gate C](../research/2026-10-gate-c.md)); applying a newer revision is untested.
 
 ## References
 

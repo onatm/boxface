@@ -75,7 +75,7 @@ The MVP is successful when this is reliable across real development days, not me
 | Host | One supported Linux/KVM host | Install, diagnose prerequisites, survive management-service restart |
 | Guest image | Minimal Debian built by mkosi | Boots under the chosen microVM backend and reports readiness |
 | User profile | Prebuilt Home Manager/Nix package closure | Agents and tools available without runtime package installation into baseline |
-| Personalisation | Versioned chezmoi configuration | Applies on first initialisation without overwriting agent state on later boots |
+| Personalisation | Versioned dotfiles in chezmoi format, or a plain dotfiles repository, rendered when the profile is built | Seeded on first initialisation without overwriting agent state on later boots |
 | Runtime | One hypervisor backend | Multiple isolated named environments, constrained by measured capacity |
 | Persistence | Dedicated data disk per environment | Files and agent state survive clean stop/start and image replacement |
 | Access | Native CLI and SSH attachment | Linux arm64 client connects to an x86-64 host without local build dependencies |

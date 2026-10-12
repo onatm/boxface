@@ -62,7 +62,7 @@ func TestFlake(t *testing.T) {
 		`nixpkgs.url = "github:NixOS/nixpkgs/7c8764b7c7b09b34f632464276218ef9090eaa11"`,
 		`url = "github:nix-community/home-manager/db7d5e2332710f5abb088f6b5de927d7f9511b35"`,
 		"config.allowUnfree = true;",
-		"home.packages = with pkgs; [ chezmoi git tmux python3Packages.requests ripgrep ];",
+		"home.packages = with pkgs; [ git tmux python3Packages.requests ripgrep ];",
 	} {
 		if !strings.Contains(f, want) {
 			t.Fatalf("flake.nix lacks %q:\n%s", want, f)

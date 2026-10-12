@@ -39,13 +39,12 @@ step "building the profile" "nix build failed"
 nix build "path:$flake#homeConfigurations.dev.activationPackage" -o /nix/.home/generation >> "$log" 2>&1
 
 out=/nix/.boxface-out
-rm -rf "$out"
-mkdir -p "$out/store" "$out/boxface/dotfiles"
+rm -rf "$out" /nix/.tmp/dotfiles
+mkdir -p "$out/store" "$out/boxface"
 if [ -f /input/dotfiles-repo ]; then
   step "fetching the dotfiles" "could not fetch the dotfiles repository"
   repo="$(cat /input/dotfiles-repo)"
   ref="$(cat /input/dotfiles-ref)"
-  rm -rf /nix/.tmp/dotfiles
   if [ -n "$ref" ]; then
     git clone --quiet --depth 1 --branch "$ref" -- "$repo" /nix/.tmp/dotfiles >> "$log" 2>&1 \
       || { git clone --quiet -- "$repo" /nix/.tmp/dotfiles >> "$log" 2>&1 && git -C /nix/.tmp/dotfiles checkout --quiet --detach "$ref" -- >> "$log" 2>&1; }
@@ -54,14 +53,18 @@ if [ -f /input/dotfiles-repo ]; then
   fi
   commit="$(git -C /nix/.tmp/dotfiles rev-parse HEAD)"
   rm -rf /nix/.tmp/dotfiles/.git
-  cp -a /nix/.tmp/dotfiles/. "$out/boxface/dotfiles/"
-  rm -rf /nix/.tmp/dotfiles
   echo "$commit" > "$out/boxface/dotfiles-revision"
 elif [ -d /input/dotfiles ]; then
-  cp -a /input/dotfiles/. "$out/boxface/dotfiles/"
+  cp -a /input/dotfiles /nix/.tmp/dotfiles
   cp /input/dotfiles-revision "$out/boxface/dotfiles-revision"
 else
   echo none > "$out/boxface/dotfiles-revision"
+fi
+if [ -d /nix/.tmp/dotfiles ]; then
+  step "rendering the dotfiles" "could not render the dotfiles; the log says why"
+  nix build --inputs-from "path:$flake" nixpkgs#chezmoi -o /nix/.home/chezmoi >> "$log" 2>&1
+  boxface-render-dotfiles /nix/.tmp/dotfiles "$out/boxface/home" /nix/.home/chezmoi/bin/chezmoi >> "$log" 2>&1
+  rm -rf /nix/.tmp/dotfiles
 fi
 
 step "packing the profile drive" "could not pack the profile drive"

@@ -1,22 +1,42 @@
 #!/bin/sh
 set -eu
 
-src=/usr/share/boxface/dotfiles
+src=/usr/share/boxface/home
+manifest=/usr/share/boxface/home.manifest
 state="$HOME/.local/state/boxface"
-chezmoi=/opt/boxface/profile/bin/chezmoi
-
-started=$(date +%s%N)
-mkdir -p "$HOME/.config/chezmoi" "$state"
-printf 'sourceDir = "%s"\n' "$src" > "$HOME/.config/chezmoi/chezmoi.toml"
-"$chezmoi" apply --no-tty
-elapsed_ms=$(( ($(date +%s%N) - started) / 1000000 ))
-
+tab="$(printf '\t')"
+mkdir -p "$state"
+report="$state/personalisation.tmp"
 {
-  echo "revision: $(cat /usr/share/boxface/dotfiles-revision)"
+  echo "revision: $(cat /usr/share/boxface/dotfiles-revision 2>/dev/null || echo none)"
   echo "applied: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "apply ms: $elapsed_ms"
-  echo "chezmoi: $("$chezmoi" --version)"
-  echo "managed:"
-  "$chezmoi" managed | sed 's/^/  /'
-} > "$state/personalisation.tmp"
-mv "$state/personalisation.tmp" "$state/personalisation"
+  echo "seeded:"
+} > "$report"
+
+if [ -f "$manifest" ]; then
+  while IFS="$tab" read -r kind mode digest rel; do
+    target="$HOME/$rel"
+    if [ "$kind" = dir ]; then
+      [ -e "$target" ] || install -d -m "$mode" "$target"
+      continue
+    fi
+    if [ -L "$target" ]; then
+      case "$(readlink "$target")" in
+        /nix/*) rm "$target" ;;
+      esac
+    fi
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      echo "  skipped $rel: a file you own is already there"
+      continue
+    fi
+    if [ "$kind" = symlink ]; then
+      ln -s "$digest" "$target"
+    else
+      cp "$src/$rel" "$target"
+      chmod "$mode" "$target"
+    fi
+    echo "  $rel"
+  done < "$manifest" >> "$report"
+  cp "$manifest" "$state/personalisation.manifest"
+fi
+mv "$report" "$state/personalisation"

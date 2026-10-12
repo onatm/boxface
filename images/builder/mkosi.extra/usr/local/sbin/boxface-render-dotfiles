@@ -1,0 +1,90 @@
+#!/bin/sh
+set -eu
+
+usage="usage: boxface-render-dotfiles SOURCE OUTPUT CHEZMOI"
+src="${1:?$usage}"
+out="${2:?$usage}"
+chezmoi="${3:?$usage}"
+manifest="$out.manifest"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+rm -rf "$out"
+mkdir -p "$out"
+: > "$manifest"
+
+is_chezmoi() {
+  [ -n "$(find "$src" -path "$src/.git" -prune -o \( -name '.chezmoi*' -o -name 'dot_*' -o -name 'private_*' -o -name 'executable_*' \
+    -o -name 'symlink_*' -o -name 'create_*' -o -name 'modify_*' -o -name 'readonly_*' -o -name 'exact_*' -o -name 'encrypted_*' \) -print | head -1)" ]
+}
+
+record() {
+  (cd "$out" && find . -mindepth 1 -print | sort) | while IFS= read -r rel; do
+    rel=${rel#./}
+    if [ -L "$out/$rel" ]; then
+      printf 'symlink\t-\t%s\t%s\n' "$(readlink "$out/$rel")" "$rel"
+    elif [ -d "$out/$rel" ]; then
+      printf 'dir\t%s\t-\t%s\n' "$(stat -c %a "$out/$rel")" "$rel"
+    else
+      kind=$(awk -F '\t' -v p="$rel" '$1 == p { print $2; exit }' "$work/kinds" 2>/dev/null || true)
+      printf '%s\t%s\t%s\t%s\n' "${kind:-file}" "$(stat -c %a "$out/$rel")" "$(sha256sum "$out/$rel" | cut -d' ' -f1)" "$rel"
+    fi
+  done > "$manifest"
+  chmod -R a+rX "$out"
+}
+
+if ! is_chezmoi; then
+  echo "dotfiles: no chezmoi naming; copying the repository's top-level dotfiles as they are"
+  for entry in "$src"/.[!.]* "$src"/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case "$(basename "$entry")" in .git | .github | .gitignore | .gitmodules | .gitattributes) continue ;; esac
+    cp -a "$entry" "$out/"
+  done
+  record
+  echo "dotfiles: $(grep -cv '^dir' "$manifest" || true) files"
+  exit 0
+fi
+
+chmod 0755 "$work"
+cp -a "$src" "$work/src"
+src="$work/src"
+chmod -R a+rX "$src"
+mkdir -p "$work/cache"
+chown 1000:1000 "$work/cache"
+grep -v '^[^:]*:[^:]*:1000:' /etc/passwd > "$work/passwd" || true
+echo 'dev:x:1000:1000::/home/dev:/bin/sh' >> "$work/passwd"
+grep -v '^[^:]*:[^:]*:1000:' /etc/group > "$work/group" || true
+echo 'dev:x:1000:' >> "$work/group"
+echo boxface > "$work/hostname"
+chmod 0644 "$work/passwd" "$work/group" "$work/hostname"
+
+as_dev() {
+  unshare --mount --uts sh -c '
+    mount --bind "$1/passwd" /etc/passwd && mount --bind "$1/group" /etc/group && mount --bind "$1/hostname" /etc/hostname &&
+    echo boxface > /proc/sys/kernel/hostname && shift &&
+    exec setpriv --reuid=1000 --regid=1000 --clear-groups env -i HOME=/home/dev USER=dev PATH=/usr/bin:/bin XDG_CACHE_HOME="$0" "$@"' \
+    "$work/cache" "$work" "$@"
+}
+
+encrypted="$(as_dev "$chezmoi" managed --source "$src" --include=encrypted --path-style=source-relative)"
+[ -z "$encrypted" ] || printf 'dotfiles: skipped encrypted files:\n%s\n' "$encrypted" | sed '2,$s/^/  /'
+
+if ! as_dev "$chezmoi" archive --source "$src" --format tar --exclude=scripts,encrypted > "$work/home.tar" 2> "$work/err"; then
+  cat "$work/err"
+  if grep -qiE 'error calling [a-z]*(onepassword|bitwarden|lastpass|pass|keepass|keeper|dashlane|doppler|vault|secret|rbw)' "$work/err"; then
+    echo "dotfiles: a template reads a password manager, which the builder cannot reach; save secrets on the Credentials page instead"
+  fi
+  exit 1
+fi
+tar -x --no-same-owner -C "$out" -f "$work/home.tar"
+
+as_dev "$chezmoi" managed --source "$src" --exclude=scripts,encrypted --include=files,symlinks --path-style=all --format=json |
+  awk '
+    match($0, /^  "(.*)": \{$/) { target = substr($0, 4, length($0) - 7) }
+    match($0, /"sourceRelative": "(.*)"/) {
+      source = $0; sub(/.*"sourceRelative": "/, "", source); sub(/".*/, "", source)
+      n = split(source, parts, "/"); base = parts[n]; kind = "file"
+      if (base == "create_empty_") kind = "external"; else if (base ~ /^create_/) kind = "create"; else if (base ~ /^modify_/) kind = "modify"
+      printf "%s\t%s\n", target, kind
+    }' > "$work/kinds"
+record
+echo "dotfiles: rendered $(grep -cv '^dir' "$manifest" || true) files"
