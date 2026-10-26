@@ -7,6 +7,8 @@ Boxface runs persistent development environments inside Firecracker microVMs on 
 
 Each environment has a read-only managed baseline (Debian, rootless Docker, and a Nix-built toolset with Claude Code, Codex, OpenCode, Pi, mise, Node, and Rust) and its own persistent data disk for your home directory and workspace. The baseline is read-only to the environment, not to you: you choose its packages, tools, and configuration, and [rebuild it](#customise-the-baseline) when you want to change them.
 
+[![Boxface demo](docs/demo.svg)](https://asciinema.org/a/1268258)
+
 ## Features
 
 - **Durable lifecycle.** Create, start, stop, delete, and purge environments with `boxfacectl` or the API. Operations survive API, worker, and host restarts without duplicating or orphaning VMs, disks, or network devices.
